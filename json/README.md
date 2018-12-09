@@ -22,7 +22,8 @@ Single header ASCI encoding json parser for c++
 ```
 	// Setting
 	JsonValue value;
-	JsonSetString(&value, "abc", nullptr); // Third parameter is context to send to custom allocator (used in string, array, object)
+	// Third parameter is context to send to custom allocator (used in string, array, object)
+	JsonSetString(&value, "abc", nullptr); 
 	JsonDeinit(&value);
 ```
 
@@ -30,7 +31,8 @@ Single header ASCI encoding json parser for c++
 	// Memory leak
 	JsonValue value; // Uninitialized value
 	JsonSetString(&value, "test", nullptr);
-	JsonSetString(&value, "abc", nullptr); // !Memory leak, Set function dont deinitialize, value might be uninitialized
+	// !Memory leak, Set function dont deinitialize, value might be uninitialized
+	JsonSetString(&value, "abc", nullptr); 
 	JsonDeinit(&value);
 ```
 
@@ -76,7 +78,8 @@ Single header ASCI encoding json parser for c++
 		// or value->type_ == JSON_VALUE_OBJECT
 	}
 
-  // Parsing returns string type with nullptr if the string was empty and JSON_INPUT_STRING_IS_STORAGE is not used
+  // Parsing returns string type with nullptr 
+	//   if the string was empty and JSON_INPUT_STRING_IS_STORAGE is not used
   // if (JsonIsType(&value, JSON_VALUE_STRING)) { 
 	//   if (JsonGetString(&value)) { ... }
 	// }
@@ -89,10 +92,12 @@ Single header ASCI encoding json parser for c++
 	JsonDeinit(&value);
 
 	JsonPrintContext context = JsonPrintContextInit(nullptr);
-	char* buffer = JsonValuePrint(&context, &value, true, nullptr); // return buffer is owned by printcontext
-																																	// ... use buffer
+	/// returned buffer is owned by printcontext
+	char* buffer = JsonValuePrint(&context, &value, true, nullptr); /
+	// ... use buffer
 
-	buffer = JsonValuePrint(&context, &value, true, nullptr); // if buffer is not needed anymore, printcontext can be reused
+	// if buffer is not needed anymore, printcontext can be reused
+	buffer = JsonValuePrint(&context, &value, true, nullptr); 
 
 	JsonPrintContextDeinit(&context);
 ```
