@@ -93,7 +93,7 @@ JsonDeinit(&value);
 
 JsonPrintContext context = JsonPrintContextInit(nullptr);
 /// returned buffer is owned by printcontext
-char* buffer = JsonValuePrint(&context, &value, true, nullptr); /
+char* buffer = JsonValuePrint(&context, &value, true, nullptr);
 // ... use buffer
 
 // if buffer is not needed anymore, printcontext can be reused
