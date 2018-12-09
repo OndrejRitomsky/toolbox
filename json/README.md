@@ -4,16 +4,16 @@ Single header ASCI encoding json parser for c++
 
 ## Usage
 	#define JSON_IMPLEMENTATION 
-	before json.h include in one .cpp file
+	//before json.h include in one .cpp file
 
 ### Options
-	Create error message if parsing failed
+	//Create error message if parsing failed
 	#define JSON_ERROR_MESSAGE
 
-	Destructive parsing for strings, parsed string points to modified input buffer "str" -> "str\0 ...
+	//Destructive parsing for strings, parsed string points to modified input buffer "str" -> "str\0 ...
 	#define JSON_INPUT_STRING_IS_STORAGE
 
-	Custom allocator
+	//Custom allocator
 	#define JSON_ALLOC(context, size) <alloc function call> // malloc(size) by default
 	#define JSON_FREE(context, data) <free function call>   // free(data) by default
 
