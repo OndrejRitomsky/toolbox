@@ -103,16 +103,13 @@ void function()
 
 #define TEST_DOUBLE_E(a, b, text) TEST_INTERNAL_TEST(Test_DoubleEq((a), (b)), text, a, "==", b);
 
-
 #define TEST_ARRAY_EQ(a, b, count, text) {\
-	bool correct = true; decltype(count) i = 0; \
-	for (; correct && i < count; ++i) { \
+	bool correct = true; \
+	for (unsigned int i = 0; correct && i < count; ++i) { \
 		correct &= (a)[i] == (b)[i]; \
 	} \
 	TEST_INTERNAL_TEST(correct, text, a, "==", b); \
 }
-
-
 
 #define TEST_PERF(function) \
 void function(); \
@@ -120,10 +117,9 @@ static bool g_perf_register##function = Test_ContainerRegisterPerfTest(function)
 void function() 
 
 
-
 #define TEST_PERF_START(name, count) { \
 	Test_ContainerPerfTestStartScope(__FUNCTION__, #name);\
-	for (decltype(count) _test_it = 0; _test_it < count; ++_test_it) { \
+	for (unsigned int _test_it = 0; _test_it < count; ++_test_it) { \
 		Test_ContainerPerfTestStart();
 
 #define TEST_PERF_STOP() \
@@ -131,6 +127,7 @@ void function()
 	} \
 	Test_ContainerPerfTestStopScope(); \
 }
+
 
 #endif // TEST_INCLUDE_TEST_H
 
