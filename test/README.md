@@ -35,8 +35,8 @@ TEST(FooTest) {
 	TEST_L(size, capacity, "size should be less than capacity");
 	
 	// -> Test3 .................................................................. FAILED
-  // ->   size == 8, size should be 4
-  // ->   size < capacity, size should be less than capacity
+	// ->   size == 8, size should be 4
+	// ->   size < capacity, size should be less than capacity
 }
 ```
 
