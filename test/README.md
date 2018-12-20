@@ -44,11 +44,11 @@ TEST(FooTest) {
 ```
 // Performance Test
 TEST_PERF(FooFooTest) {
-	TEST_PERF_START(MyFoo, 10);
+	TEST_PERF_START(MyFoo, i, 10);
 	Sleep(10);
 	TEST_PERF_STOP();
 
-	TEST_PERF_START(OtherFoo, 10);
+	TEST_PERF_START(OtherFoo, i, 10);
 	Sleep(20);
 	TEST_PERF_STOP();
 	
