@@ -113,23 +113,23 @@ void JsonSetObject(JsonValue* value, void* allocContext);
 
 
 
-bool JsonIsType(JsonValue* value, JsonValueType type);
+bool JsonIsType(const JsonValue* value, JsonValueType type);
 
-bool JsonIsInvalid(JsonValue* value);
+bool JsonIsInvalid(const JsonValue* value);
 
-bool JsonIsBool(JsonValue* value);
+bool JsonIsBool(const JsonValue* value);
 
-bool JsonIsNull(JsonValue* value);
+bool JsonIsNull(const JsonValue* value);
 
-bool JsonIsInt(JsonValue* value);
+bool JsonIsInt(const JsonValue* value);
 
-bool JsonIsDouble(JsonValue* value);
+bool JsonIsDouble(const JsonValue* value);
 
-bool JsonIsString(JsonValue* value);
+bool JsonIsString(const JsonValue* value);
 
-bool JsonIsArray(JsonValue* value);
+bool JsonIsArray(const JsonValue* value);
 
-bool JsonIsObject(JsonValue* value);
+bool JsonIsObject(const JsonValue* value);
 
 
 void JsonArrayAdd(JsonValue* array, JsonValue* element);
@@ -445,39 +445,39 @@ void JsonSetObject(JsonValue* value, void* allocContext) {
 	value->_allocContext = allocContext;
 }
 
-bool JsonIsType(JsonValue* value, JsonValueType type) {
+bool JsonIsType(const JsonValue* value, JsonValueType type) {
 	return value->type_ == type;
 }
 
-bool JsonIsInvalid(JsonValue* value) {
+bool JsonIsInvalid(const JsonValue* value) {
 	return value->type_ == JSON_VALUE_INVALID;
 }
 
-bool JsonIsBool(JsonValue* value) {
+bool JsonIsBool(const JsonValue* value) {
 	return value->type_ == JSON_VALUE_BOOL;
 }
 
-bool JsonIsNull(JsonValue* value) {
+bool JsonIsNull(const JsonValue* value) {
 	return value->type_ == JSON_VALUE_NULL;
 }
 
-bool JsonIsInt(JsonValue* value) {
+bool JsonIsInt(const JsonValue* value) {
 	return value->type_ == JSON_VALUE_INT;
 }
 
-bool JsonIsDouble(JsonValue* value) {
+bool JsonIsDouble(const JsonValue* value) {
 	return value->type_ == JSON_VALUE_DOUBLE;
 }
 
-bool JsonIsString(JsonValue* value) {
+bool JsonIsString(const JsonValue* value) {
 	return value->type_ == JSON_VALUE_STRING;
 }
 
-bool JsonIsArray(JsonValue* value) {
+bool JsonIsArray(const JsonValue* value) {
 	return value->type_ == JSON_VALUE_ARRAY;
 }
 
-bool JsonIsObject(JsonValue* value) {
+bool JsonIsObject(const JsonValue* value) {
 	return value->type_ == JSON_VALUE_OBJECT;
 }
 
