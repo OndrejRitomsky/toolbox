@@ -1,13 +1,4 @@
-/*
-@author Ondrej Ritomsky
-@version 0.1, 04.01.2019
-
-No warranty implied
-*/
-
-
 #include "omgui.h"
-
 
 #include <string.h> // strlen ..
 #include <math.h>   // roundf
@@ -15,23 +6,18 @@ No warranty implied
 #include <stdlib.h>
 
 // @TODO not refreshing tab should be marked!
+// @TODO not updating tab next round should be resolved.. dont render the if its shown? render it if its hidden ... then if shown dont? what about active or only one last tab
 
-// @TODO clean code around table ...(added next element switch)
+// @TODO clean code around table ? ...(added next element switch) and fix table resizing on tab changing (reason: Columns width set to 0 -> first recalculate has bad value)
 
 // @TODO tree 
 
 // @TODO strlen shouldnt be called all the time .. only in initial creation then stored
 
-// @TODO @BUG double button click on overlaying  (checkbox test failed)... moving logic to render might (bigger rework)
-
-// @TODO IMPROVE activeElement and active Tab index should be used instead of hot.. when there is click down going on until click up -> might solve elementState and eating input
-
 // @TODO is elementState needed?, what states transitions needed to interact with input
 
-// @TODO not updating tab next round should be resolved.. dont render the if its shown? render it if its hidden ... then if shown dont? what about active or only one last tab
 
-
-#define PARANOIA_LEVEL 1
+#define PARANOIA_LEVEL 0
 
 
 #if PARANOIA_LEVEL >= 1
@@ -89,8 +75,6 @@ enum OmGui_ElementState : u8 {
 };
 
 struct OmGui_Input : OmGuiInput {
-	i32 currentMouseX; // this mirrors start state of mpx
-	i32 currentMouseY; // this mirrors start state of mpy
 	i32 oldMouseX;
 	i32 oldMouseY;
 
@@ -112,7 +96,6 @@ struct OmGuiContext {
 	OmGui_TabState tabState;
 	OmGui_TabState nextTabState;
 
-	bool isCursorSet;
 	bool activeTabHasCursor;
 	bool hasOverlay; // dropdown ...
 	bool rotateActive; // only textfield now
@@ -341,10 +324,6 @@ bool OmGui_TabIsActive(const OmGuiContext* context, const OmGui_Tab* tab) {
 	return context->tabs[context->tabs.count_ - 1].index == tab->index;
 }
 
-bool OmGui_TabHasCursorForce(const OmGuiContext* context, const OmGui_Tab* tab) {
-	return OmGui_PointInGuiRect(context->input.currentMouseX, context->input.currentMouseY, &tab->rect);
-}
-
 void OmGui_TabElementSetHot(OmGuiContext* context, i32 tabIndex, i32 elementIndex) {
 	context->hotTabIndex = tabIndex;
 	context->hotElementIndex = elementIndex;
@@ -359,12 +338,11 @@ bool OmGui_TabElementIsActive(const OmGuiContext* context, i32 tabIndex, i32 ele
 }
 
 bool OmGui_ElementAllowInput(const OmGuiContext* context, const OmGui_Tab* tab) {
-	return !context->hasOverlay && context->tabState == OMGUI_TAB_STATE_NORMAL && (context->elementState == OMGUI_ELEMENT_STATE_NORMAL || context->elementState == OMGUI_ELEMENT_STATE_EDITING) && (OmGui_TabIsActive(context, tab) || !context->activeTabHasCursor);
+	return context->hotTabIndex == tab->index && !context->hasOverlay && context->tabState == OMGUI_TAB_STATE_NORMAL && 
+		(context->elementState == OMGUI_ELEMENT_STATE_NORMAL || context->elementState == OMGUI_ELEMENT_STATE_EDITING);
 }
 
-bool OmGui_RectCheckForce(OmGuiContext* context, i32 x, i32 y, i32 w, i32 h);
-
-bool OmGui_ElementRectHot(OmGuiContext* context, const OmGui_Tab* tab, i32 elementIndex, OmGuiCursorType cursor, bool setActive, const OmGui_Rect* rect);
+bool OmGui_ElementRectHot(OmGuiContext* context, const OmGui_Tab* tab, i32 elementIndex, bool setActive, const OmGui_Rect* rect);
 
 
 // sets giuelement rect and index
@@ -419,7 +397,7 @@ void OmGui_TabButtonRender(OmGuiContext* context, OmGui_Tab* baseTab, OmGui_Tab*
 
 void OmGui_LabelRender(OmGuiContext* context, const OmGui_Rect* rect, const char* text);
 
-void OmGui_ButtonRender(OmGuiContext* context, const OmGui_Tab* tab, const  OmGui_Element* element);
+void OmGui_ButtonRender(OmGuiContext* context, const OmGui_Tab* tab, const OmGui_Element* element);
 
 void OmGui_ToggleButtonRender(OmGuiContext* context, const OmGui_Tab* tab, const OmGui_Element* element);
 
@@ -435,13 +413,8 @@ void OmGui_TabContentRender(OmGuiContext* context, OmGui_Tab* tab, i32 tabConten
 
 void OmGui_TabRender(OmGuiContext* context, OmGui_Tab* tab);
 
-
-void OmGui_SetCursor(OmGuiContext* context, OmGuiCursorType cursor);
-
-void OmGui_EatInput(OmGuiContext* context);
-
-// setActive == true -> invalidates activeElementIndes and set nextActiveTabIndex
-void OmGui_EatInputActive(OmGuiContext* context, u32 tabIndex, bool setActive);
+// setActive == true -> invalidates nextActiveTabIndex
+void OmGui_SetActive(OmGuiContext* context, u32 tabIndex, bool setActive);
 
 OmGuiCursorType OmGui_CursorFromBorder(OmGui_BorderFlags border);
 
@@ -477,6 +450,8 @@ void OmGui_UserCanvasCommand(OmGuiContext* context, i32 x, i32 y, i32 w, i32 h, 
 static void OmGui_DebugVerifyChain(OmGuiContext* context, OmGui_Tab* tab) {
 	u32 index = tab->index;
 	u32 nextIndex = tab->nextIndex;
+
+	Assert(context->tabIDToTabHandle[tab->id] == tab->index);
 
 	while (nextIndex != INVALID_ARRAY_INDEX) {
 		OmGui_Tab* hidden = &context->tabs[nextIndex];
@@ -534,7 +509,6 @@ OmGuiContext* OmGuiPlacementInit(void* buffer, OmGuiStyle* style, OmGuiIAllocato
 
 	context->rotateActive = false;
 	context->currentTab = nullptr;
-	context->isCursorSet = false;
 	context->cursor = OMGUI_CURSOR_NORMAL;
 	context->input.windowWidth = 1024;
 	context->input.windowHeight = 768;
@@ -621,16 +595,11 @@ u32 OmGuiAddTab(OmGuiContext* context, const char* name) {
 	return id;
 }
 
-
 void OmGuiUpdateInput(OmGuiContext* context, const OmGuiInput* input) {
 	memcpy(&context->input, input, sizeof(OmGuiInput));
 
 	context->input.bufferInput = OmGui_PushBufferData(context, (const char*) context->input.inputData, context->input.inputCount * sizeof(OmGuiKeyType));
 	context->input.inputData = nullptr;	
-	context->input.oldMouseX = context->input.currentMouseX;
-	context->input.oldMouseY = context->input.currentMouseY;
-	context->input.currentMouseX = context->input.mouseX;
-	context->input.currentMouseY = context->input.mouseY;
 
 	context->activeTabHasCursor = false;
 	u32 count = context->tabs.count_;
@@ -680,7 +649,7 @@ void OmGuiColorToFloats(int color, float outRgb[3]) {
 
 bool OmGuiButton(OmGuiContext* context, const char* text) {
 	OmGui_Element* element = OmGui_AddElement(context, OMGUI_BUTTON, text, nullptr);
-	if (OmGui_ElementRectHot(context, context->currentTab, element->index, OMGUI_CURSOR_POINTER, context->input.clickUp, &element->rect))
+	if (OmGui_ElementRectHot(context, context->currentTab, element->index, context->input.clickUp, &element->rect))
 		return context->input.clickUp;
 
 	return false;
@@ -867,18 +836,16 @@ int OmGuiSlider(OmGuiContext* context, int minValue, int maxValue, int value) {
 			context->elementState = OMGUI_ELEMENT_STATE_SLIDING;
 
 		OmGui_TabElementSetHot(context, tab->index, element->index);
-		OmGui_SetCursor(context, OMGUI_CURSOR_POINTER);
-		OmGui_EatInputActive(context, tab->index, context->input.clickDown);
+		OmGui_SetActive(context, tab->index, context->input.clickDown);
 	}
 
 	i32 clampedValue = OmGui_Clamp(value, minValue, maxValue);
 	if (OmGui_TabElementIsHot(context, tab->index, element->index) && OmGui_TabIsActive(context, tab) && context->elementState == OMGUI_ELEMENT_STATE_SLIDING) {
-		f32 ratio = (f32) OmGui_Clamp(context->input.currentMouseX - element->rect.x, 0, element->rect.w) / element->rect.w;
+		f32 ratio = (f32) OmGui_Clamp(context->input.mouseX - element->rect.x, 0, element->rect.w) / element->rect.w;
 		clampedValue = minValue + (i32) roundf((maxValue - minValue) * ratio);
 
 		OmGui_TabElementSetHot(context, tab->index, element->index);
-		OmGui_SetCursor(context, OMGUI_CURSOR_POINTER);
-		OmGui_EatInputActive(context, tab->index, true);
+		OmGui_SetActive(context, tab->index, true);
 
 		if (context->input.clickUp) {
 			context->activeElementIndex = INVALID_ARRAY_INDEX;
@@ -902,7 +869,7 @@ bool OmGuiSubTab(OmGuiContext* context, const char* text) {
 		element->check_enabled = true;
 
 	element->rect.y -= element->rect.h / 2;
-	if (OmGui_ElementRectHot(context, context->currentTab, element->index, OMGUI_CURSOR_POINTER, context->input.clickUp, &element->rect) && context->input.clickUp)
+	if (OmGui_ElementRectHot(context, context->currentTab, element->index, context->input.clickUp, &element->rect) && context->input.clickUp)
 		element->check_enabled = !element->check_enabled;
 
 	element->rect.y += element->rect.h / 2;
@@ -913,7 +880,7 @@ bool OmGuiCheckbox(OmGuiContext* context, bool enabled) {
 	OmGui_Element* element = OmGui_AddElement(context, OMGUI_CHECKBOX, nullptr, nullptr);
 	element->check_enabled = enabled;
 
-	if (OmGui_ElementRectHot(context, context->currentTab, element->index, OMGUI_CURSOR_POINTER, context->input.clickUp, &element->rect) && context->input.clickUp)
+	if (OmGui_ElementRectHot(context, context->currentTab, element->index, context->input.clickUp, &element->rect) && context->input.clickUp)
 		element->check_enabled = !element->check_enabled;
 
 	return element->check_enabled;
@@ -992,9 +959,8 @@ static void OmGui_TabRender(OmGuiContext* context, OmGui_Tab* tab) {
 
 	bool highlightHeader = false;
 
-	if (OmGui_PointInGuiRect(context->input.currentMouseX, context->input.currentMouseY, &tab->rect) && !OmGui_TabIsActive(context, tab) && context->tabState == OMGUI_TAB_STATE_MOVING) {
+	if (OmGui_PointInGuiRect(context->input.mouseX, context->input.mouseY, &tab->rect) && !OmGui_TabIsActive(context, tab) && context->tabState == OMGUI_TAB_STATE_MOVING) {
 		OmGui_TabElementSetHot(context, tab->index, INVALID_ARRAY_INDEX);
-		OmGui_EatInput(context);
 	}
 
 	u32 index = tab->index;
@@ -1014,7 +980,7 @@ static void OmGui_TabRender(OmGuiContext* context, OmGui_Tab* tab) {
 	OmGui_Rect rect = tab->rect;
 	rect.h = halfHeaderHeight;
 
-	if (OmGui_ElementRectHot(context, tab, INVALID_ARRAY_INDEX, OMGUI_CURSOR_POINTER, context->input.clickDown, &rect)) {
+	if (OmGui_ElementRectHot(context, tab, INVALID_ARRAY_INDEX, context->input.clickDown, &rect)) {
 		highlightHeader = true;
 		if (context->input.clickDown)
 			context->nextTabState = OMGUI_TAB_STATE_MOVING;
@@ -1022,17 +988,14 @@ static void OmGui_TabRender(OmGuiContext* context, OmGui_Tab* tab) {
 
 	OmGui_Rect nextRect = tab->rect;
 	if (context->tabState == OMGUI_TAB_STATE_MOVING && OmGui_TabIsActive(context, tab)) {
-		nextRect.x += context->input.currentMouseX - context->input.oldMouseX;
-		nextRect.y += context->input.currentMouseY - context->input.oldMouseY;
+		nextRect.x += context->input.mouseX - context->input.oldMouseX;
+		nextRect.y += context->input.mouseY - context->input.oldMouseY;
 		highlightHeader = true;
-		OmGui_SetCursor(context, OMGUI_CURSOR_POINTER);
-		OmGui_EatInputActive(context, tab->index, true);
+		OmGui_SetActive(context, tab->index, true);
 	}
 	else if (!highlightHeader) {
 		if (context->tabState == OMGUI_TAB_STATE_RESIZING && OmGui_TabIsActive(context, tab)) {
 			OmGui_RectResize(context, &nextRect, tab->side, 100, 100, context->input.windowWidth, context->input.windowHeight);
-			OmGui_SetCursor(context, OmGui_CursorFromBorder(tab->side));
-			OmGui_EatInput(context);
 
 			if (context->input.clickUp) {
 				context->nextTabState = OMGUI_TAB_STATE_NORMAL;
@@ -1045,8 +1008,8 @@ static void OmGui_TabRender(OmGuiContext* context, OmGui_Tab* tab) {
 				if (context->input.clickDown)
 					context->nextTabState = OMGUI_TAB_STATE_RESIZING;
 
-				OmGui_SetCursor(context, OmGui_CursorFromBorder(tab->side));
-				OmGui_EatInputActive(context, tab->index, context->input.clickDown);
+				context->cursor = OmGui_CursorFromBorder(tab->side);
+				OmGui_SetActive(context, tab->index, context->input.clickDown);
 			}
 		}
 	}
@@ -1078,8 +1041,8 @@ static void OmGui_TabRender(OmGuiContext* context, OmGui_Tab* tab) {
 		tab->rect = nextRect;
 	}
 
-	if (context->tabState == OMGUI_TAB_STATE_NORMAL && context->nextTabState == OMGUI_TAB_STATE_NORMAL && context->input.clickUp && OmGui_PointInGuiRect(context->input.currentMouseX, context->input.currentMouseY, &tab->rect)) {
-		OmGui_EatInputActive(context, tab->index, true);
+	if (context->tabState == OMGUI_TAB_STATE_NORMAL && context->nextTabState == OMGUI_TAB_STATE_NORMAL && context->input.clickUp && OmGui_PointInGuiRect(context->input.mouseX, context->input.mouseY, &tab->rect)) {
+		OmGui_SetActive(context, tab->index, true);
 	}
 }
 
@@ -1257,10 +1220,9 @@ static bool OmGui_TabScrollbar(OmGuiContext* context, OmGui_Tab* tab, i32* outCo
 		}
 		else if (context->tabState == OMGUI_TAB_STATE_SCROLLING) {
 			setActive = true;
-			y += context->input.currentMouseY - context->input.oldMouseY;
+			y += context->input.mouseY - context->input.oldMouseY;
 		}
-		OmGui_SetCursor(context, OMGUI_CURSOR_POINTER);
-		OmGui_EatInputActive(context, tab->index, setActive);
+		OmGui_SetActive(context, tab->index, setActive);
 	}
 
 	if (context->tabState == OMGUI_TAB_STATE_SCROLLING && context->input.clickUp)
@@ -1450,10 +1412,14 @@ static void OmGui_TabContentRender(OmGuiContext* context, OmGui_Tab* tab, i32 ta
 	}
 }
 
-char* OmGuiRender(OmGuiContext* context, unsigned int* outBufferSize, OmGuiCursorType* optOutCursor) {
+char* OmGuiUpdate(OmGuiContext* context, unsigned int* outBufferSize, OmGuiCursorType* optOutCursor) {
 	if (context->tabs.count_ == 0) {
-		context->renderDataSize = 0; 
-		context->bufferDataSize = 0; 
+		*outBufferSize = 0;
+		if (optOutCursor) 
+			*optOutCursor = OMGUI_CURSOR_NORMAL;
+
+		context->renderDataSize = 0;
+		context->bufferDataSize = 0;
 		return nullptr;
 	}
 
@@ -1463,12 +1429,36 @@ char* OmGuiRender(OmGuiContext* context, unsigned int* outBufferSize, OmGuiCurso
 
 	context->hasOverlay = false;
 
+	// Set hot tab -> the last rendered with mouse inside is hot
+	if (context->tabState == OMGUI_TAB_STATE_NORMAL) {
+		OmGui_Tab* tab = context->tabs._data;
+		OmGui_Tab* tabEnd = tab + context->tabs.count_;
+		OmGui_Rect rect;
+		for (; tab < tabEnd; tab++) {
+			if (!tab->isHidden) {
+				rect = tab->rect;
+				rect.x -= context->style.borderCheckSize;
+				rect.y -= context->style.borderCheckSize;
+				rect.w += context->style.borderCheckSize * 2;
+				rect.h += context->style.borderCheckSize * 2;
+
+				if (context->hotTabIndex != tab->index && OmGui_PointInGuiRect(context->input.mouseX, context->input.mouseY, &rect)) {
+					context->hotTabIndex = tab->index;
+				}
+			}
+		}
+	}
+	else {
+		OmGui_TabElementSetHot(context, INVALID_ARRAY_INDEX, INVALID_ARRAY_INDEX);
+	}
+
+	// Main logic for each tab
 	for (u32 i = 0; i < context->tabs.count_; ++i) {
 		if (!context->tabs[i].isHidden)
 			OmGui_TabRender(context, &context->tabs[i]);
 	}
 
-
+	// Logic for the active tab
 	if (context->tabState == OMGUI_TAB_STATE_NORMAL) {
 		if (context->nextActiveTabIndex != INVALID_ARRAY_INDEX &&  !context->tabs[context->nextActiveTabIndex].isHidden) {
 			OmGui_TabSetActive(context, context->nextActiveTabIndex);
@@ -1515,9 +1505,8 @@ char* OmGuiRender(OmGuiContext* context, unsigned int* outBufferSize, OmGuiCurso
 			                      OmGui_RectCreate(0, 0, context->input.windowWidth / 2, context->input.windowHeight)};
 
 		for (u32 i = 0; i < 2; ++i) {
-			if (OmGui_PointInGuiRect(context->input.currentMouseX, context->input.currentMouseY, &baseRects[i])) {
+			if (OmGui_PointInGuiRect(context->input.mouseX, context->input.mouseY, &baseRects[i])) {
 				context->hotTabIndex = INVALID_ARRAY_INDEX;
-				OmGui_EatInput(context);
 				colors[i] = context->style.buttonHotColor;
 				if (context->input.clickUp)
 					context->tabs[context->tabs.count_ - 1].rect = setRects[i];
@@ -1568,9 +1557,9 @@ char* OmGuiRender(OmGuiContext* context, unsigned int* outBufferSize, OmGuiCurso
 		i32 activeIndex = activeTab->index;
 		u32 hiddenIndex = activeTab->nextIndex;
 
-		if (!OmGui_PointInRect(context->input.currentMouseX, context->input.currentMouseY, activeTab->rect.x + activeTab->button.offsetX, activeTab->rect.y + context->style.fontSize, activeTab->button.w, context->style.fontSize)) {
-			rect.x += context->input.currentMouseX - context->input.oldMouseX;
-			rect.y += context->input.currentMouseY - context->input.oldMouseY;
+		if (!OmGui_PointInRect(context->input.mouseX, context->input.mouseY, activeTab->rect.x + activeTab->button.offsetX, activeTab->rect.y + context->style.fontSize, activeTab->button.w, context->style.fontSize)) {
+			rect.x += context->input.mouseX - context->input.oldMouseX;
+			rect.y += context->input.mouseY - context->input.oldMouseY;
 
 			OmGui_HiddenTabSetActive(context, activeTab->index, hiddenIndex, 0);
 			OmGui_HiddenTabUndock(context, rect, hiddenIndex);
@@ -1584,20 +1573,52 @@ char* OmGuiRender(OmGuiContext* context, unsigned int* outBufferSize, OmGuiCurso
 		}
 	}
 
-	OmGui_TabElementSetHot(context, INVALID_ARRAY_INDEX, INVALID_ARRAY_INDEX);
-	context->nextActiveTabIndex = INVALID_ARRAY_INDEX;
+	// Cursor
+	if (context->hotTabIndex != INVALID_ARRAY_INDEX) {
+		if (context->hotElementIndex == INVALID_ARRAY_INDEX) {
+			if (context->tabState == OMGUI_TAB_STATE_RESIZING) {
+				context->cursor = OmGui_CursorFromBorder(context->tabs[context->hotTabIndex].side);
+			}
+		}
+		else if (context->hotElementIndex == DROPDOWN_BUTTON_INDEX || context->hotElementIndex == TAB_BUTTON_INDEX) {
+			context->cursor = OMGUI_CURSOR_POINTER;
+		}
+		else {
+			const OmGui_Element* element = &context->tabs[context->hotTabIndex].elements[context->hotElementIndex];
 
-	if (!context->isCursorSet) {
-		context->cursor = OMGUI_CURSOR_NORMAL;
+			switch (element->type) {
+			case OMGUI_TEXT_FIELD:
+			case OMGUI_U32_FIELD:
+			case OMGUI_I32_FIELD:
+			case OMGUI_F32_FIELD:
+				context->cursor = OMGUI_CURSOR_IBEAM;
+				break;
+			case OMGUI_BUTTON:
+			case OMGUI_SUBTAB:
+			case OMGUI_DROPDOWN:
+			case OMGUI_SLIDER:
+			case OMGUI_CHECKBOX:
+				context->cursor = OMGUI_CURSOR_POINTER;
+				break;
+			}
+		}
 	}
 
-	context->isCursorSet = false;
+	OmGui_TabElementSetHot(context, context->hotTabIndex, INVALID_ARRAY_INDEX);
+	context->nextActiveTabIndex = INVALID_ARRAY_INDEX;
+
+
 	context->tabState = context->nextTabState;
 
 	if (optOutCursor)
 		*optOutCursor = context->cursor;
 
 	*outBufferSize = context->renderDataSize;
+
+	context->cursor = OMGUI_CURSOR_NORMAL;
+
+	context->input.oldMouseX = context->input.mouseX;
+	context->input.oldMouseY = context->input.mouseY;
 
 	context->renderDataSize = 0; // User is still using it but next updated it will be used from scratch
 	context->bufferDataSize = 0; // User is still using it but next updated it will be used from scratch
@@ -1608,7 +1629,7 @@ char* OmGuiRender(OmGuiContext* context, unsigned int* outBufferSize, OmGuiCurso
 
 static u32 OmGui_Hash(const char* text) {
 	i32 i = 0;
-	u32 hash = 0x13371337;
+	u32 hash = 0x13371337; // @TODO
 	while (text[i]) {
 		u32 h = (u32) text[i];
 		hash = (hash * h) ^ hash;
@@ -1686,8 +1707,8 @@ static OmGui_BorderFlags OmGui_RectBorderCheck(OmGuiContext* context, OmGui_Rect
 }
 
 static void OmGui_RectResize(OmGuiContext* context, OmGui_Rect* rect, OmGui_BorderFlags side, i32 minW, i32 minH, i32 maxW, i32 maxH) {
-	i32 deltaX = context->input.currentMouseX - context->input.oldMouseX;
-	i32 deltaY = context->input.currentMouseY - context->input.oldMouseY;
+	i32 deltaX = context->input.mouseX - context->input.oldMouseX;
+	i32 deltaY = context->input.mouseY - context->input.oldMouseY;
 
 	i32 w = rect->w;
 	i32 h = rect->h;
@@ -1722,20 +1743,16 @@ static void OmGui_TabDropDownUpdate(OmGuiContext* context, OmGui_Tab* tab,/* OmG
 		i32 h = OmGui_TabReportRectH(context);
 		OmGui_Rect rect = OmGui_TabDropDownRect(context, tab);
 
-		if (tab->dropDownMaxWidth > 0 && OmGui_PointInRect(context->input.currentMouseX, context->input.currentMouseY, rect.x, rect.y + rect.h, tab->dropDownMaxWidth, (i32) tabsCount * h)) {
-			index = (context->input.currentMouseY - (rect.y + rect.h)) / h; 
+		if (tab->dropDownMaxWidth > 0 && OmGui_PointInRect(context->input.mouseX, context->input.mouseY, rect.x, rect.y + rect.h, tab->dropDownMaxWidth, (i32) tabsCount * h)) {
+			index = (context->input.mouseY - (rect.y + rect.h)) / h; 
 			OmGui_TabElementSetHot(context, tab->index, DROPDOWN_BUTTON_INDEX);
-			OmGui_SetCursor(context, OMGUI_CURSOR_POINTER);
-			OmGui_EatInput(context);
 			context->hasOverlay = true;
 		}
 		else if (OmGui_PointInGuiRect(context->input.mouseX, context->input.mouseY, &rect)) {
 			if (tab->nextIndex != INVALID_ARRAY_INDEX) {
 				OmGui_TabElementSetHot(context, tab->index, DROPDOWN_BUTTON_INDEX);
-				OmGui_SetCursor(context, OMGUI_CURSOR_POINTER);
 				context->hasOverlay = true;
 			}
-			OmGui_EatInput(context);
 		}
 	}
 
@@ -1746,7 +1763,7 @@ static void OmGui_TabDropDownUpdate(OmGuiContext* context, OmGui_Tab* tab,/* OmG
 			nextTab = &context->tabs[nextTab->nextIndex];
 
 		OmGui_TabElementSetHot(context, nextTab->index, DROPDOWN_BUTTON_INDEX);
-		OmGui_EatInputActive(context, tab->index, context->input.clickUp);
+		OmGui_SetActive(context, tab->index, context->input.clickUp);
 
 		if (context->input.clickUp)
 			context->nextTabState = OMGUI_TAB_STATE_UNDOCKING;  //@TODO this undocking is bad or just move the undocking from nexttabstate to current state
@@ -1758,15 +1775,13 @@ static void OmGui_TabButtonUpdate(OmGuiContext* context, OmGui_Tab* baseTab, OmG
 
 	if (OmGui_ElementAllowInput(context, baseTab) && OmGui_PointInRect(context->input.mouseX, context->input.mouseY, baseTab->rect.x + buttonTab->button.offsetX, baseTab->rect.y + h, buttonTab->button.w, h)) {
 		OmGui_TabElementSetHot(context, buttonTab->index, TAB_BUTTON_INDEX);
-		OmGui_SetCursor(context, OMGUI_CURSOR_POINTER);
-		OmGui_EatInputActive(context, baseTab->index, context->input.clickDown);
+		OmGui_SetActive(context, baseTab->index, context->input.clickDown);
 
 		if (context->input.clickDown) {
 			context->nextTabState = baseTab->nextIndex != INVALID_ARRAY_INDEX ? OMGUI_TAB_STATE_UNDOCKING : OMGUI_TAB_STATE_MOVING;
 		}
 	}
 }
-
 
 OmGui_FieldEditState OmGui_FieldUpdate(OmGuiContext* context, OmGui_Element* element, char* buffer, u8 size, u8 maxSize) {
 	OmGui_FieldEditState state = OMGUI_FIELD_NO_EDIT;
@@ -1821,10 +1836,8 @@ OmGui_FieldEditState OmGui_FieldUpdate(OmGuiContext* context, OmGui_Element* ele
 				buffer[size++] = c;
 			}
 		}
-
 		buffer[size] = '\0';
 	}
-
 
 	if (context->rotateActive && OmGui_TabIsActive(context, context->currentTab) && context->activeElementIndex != element->index) {
 		context->activeElementIndex = element->index;
@@ -1832,7 +1845,6 @@ OmGui_FieldEditState OmGui_FieldUpdate(OmGuiContext* context, OmGui_Element* ele
 		context->elementState = OMGUI_ELEMENT_STATE_EDITING;
 		state = OMGUI_FIELD_EDIT_START;
 	}
-
 
 	if (state == OMGUI_FIELD_EDITING) {
 		if (context->input.clickUp) { // @TODO clickdown
@@ -1867,7 +1879,7 @@ OmGui_FieldEditState OmGui_FieldUpdate(OmGuiContext* context, OmGui_Element* ele
 		buffer[lastIndex] = last;
 	}
 
-	if (state != OMGUI_FIELD_EDIT_CANCELED && OmGui_ElementRectHot(context, context->currentTab, element->index, OMGUI_CURSOR_IBEAM, context->input.clickUp, &element->rect) && context->input.clickUp) {
+	if (state != OMGUI_FIELD_EDIT_CANCELED && OmGui_ElementRectHot(context, context->currentTab, element->index, context->input.clickUp, &element->rect) && context->input.clickUp) {
 		context->activeElementIndex = element->index;
 		context->elementState = OMGUI_ELEMENT_STATE_EDITING;
 		state = OMGUI_FIELD_EDIT_START;
@@ -1903,7 +1915,6 @@ static void OmGui_TabDropDownRender(OmGuiContext* context, const OmGui_Tab* tab,
 		}
 	}
 }
-
 
 static void OmGui_TabButtonSet(OmGuiContext* context, OmGui_Tab* buttonTab, i32 offsetX) {
 	buttonTab->button.w = OmGui_TabReportCenteredRectW(context, (u32) strlen(buttonTab->button.text));
@@ -1988,7 +1999,6 @@ void OmGui_CheckBoxRender(OmGuiContext* context, const OmGui_Tab* tab, const OmG
 	}
 }
 
-
 void OmGui_SliderRender(OmGuiContext* context, const OmGui_Tab* tab, const OmGui_Element* element) {
 	bool hover = OmGui_TabElementIsHot(context, tab->index, element->index);
 	i32 color = hover ? context->style.buttonHotColor : context->style.buttonColor;
@@ -2012,23 +2022,10 @@ void OmGui_SliderRender(OmGuiContext* context, const OmGui_Tab* tab, const OmGui
 	}
 }
 
-
-static void OmGui_EatInputActive(OmGuiContext* context, u32 tabIndex, bool setActive) {
-	OmGui_EatInput(context);
-
+static void OmGui_SetActive(OmGuiContext* context, u32 tabIndex, bool setActive) {
 	if (setActive) {
 		context->nextActiveTabIndex = tabIndex;
 	}
-}
-
-static void OmGui_EatInput(OmGuiContext* context) {
-	context->input.mouseX = -900000;
-	context->input.mouseY = -900000;
-}
-
-static void OmGui_SetCursor(OmGuiContext* context, OmGuiCursorType cursor) {
-	context->cursor = cursor;
-	context->isCursorSet = true;
 }
 
 OmGuiCursorType OmGui_CursorFromBorder(OmGui_BorderFlags border) {
@@ -2092,22 +2089,10 @@ static void OmGui_HiddenTabSetActive(OmGuiContext* context, u32 tabIndex, u32 hi
 	}
 }
 
-
-static bool OmGui_RectCheckForce(OmGuiContext* context, i32 x, i32 y, i32 w, i32 h) {
-	if (OmGui_PointInRect(context->input.currentMouseX, context->input.currentMouseY, x, y, w, h)) {
-		context->hotTabIndex = INVALID_ARRAY_INDEX;
-		OmGui_EatInput(context);
-		return true;
-	}
-	return false;
-}
-
-
-static bool OmGui_ElementRectHot(OmGuiContext* context, const OmGui_Tab* tab, i32 elementIndex, OmGuiCursorType cursor, bool setActive, const OmGui_Rect* rect) {
+static bool OmGui_ElementRectHot(OmGuiContext* context, const OmGui_Tab* tab, i32 elementIndex, bool setActive, const OmGui_Rect* rect) {
 	if (OmGui_ElementAllowInput(context, tab) && OmGui_PointInGuiRect(context->input.mouseX, context->input.mouseY, rect)) {
 		OmGui_TabElementSetHot(context, tab->index, elementIndex);
-		OmGui_SetCursor(context, cursor);
-		OmGui_EatInputActive(context, tab->index, setActive);
+		OmGui_SetActive(context, tab->index, setActive);
 		return true;
 	}
 

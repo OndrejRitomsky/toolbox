@@ -1,6 +1,6 @@
 /*
 @author Ondrej Ritomsky
-@version 0.1, 04.01.2019
+@version 0.11, 05.01.2019
 
 No warranty implied
 */
@@ -128,7 +128,7 @@ void OmGuiTable(OmGuiContext* context, unsigned int columnsCount);
 void OmGuiTableEnd(OmGuiContext* context);
 
 // the buffer will be invalidate with any other omgui call
-char* OmGuiRender(OmGuiContext* context, unsigned int* outBufferSize, OmGuiCursorType* optOutCursor);
+char* OmGuiUpdate(OmGuiContext* context, unsigned int* outBufferSize, OmGuiCursorType* optOutCursor);
 
 unsigned int OmGuiColor(unsigned char r, unsigned char g, unsigned char b, unsigned char a);
 
