@@ -1,6 +1,6 @@
 /*
 @author Ondrej Ritomsky
-@version 0.11, 05.01.2019
+@version 0.12, 06.01.2019
 
 No warranty implied
 */

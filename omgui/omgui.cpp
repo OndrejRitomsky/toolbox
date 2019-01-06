@@ -8,11 +8,11 @@
 // @TODO not refreshing tab should be marked!
 // @TODO not updating tab next round should be resolved.. dont render the if its shown? render it if its hidden ... then if shown dont? what about active or only one last tab
 
-// @TODO clean code around table ? ...(added next element switch) and fix table resizing on tab changing (reason: Columns width set to 0 -> first recalculate has bad value)
+// @TODO Table resizing on tab changing (reason: Columns width set to 0 -> first recalculate has bad value)
 
 // @TODO tree 
 
-// @TODO strlen shouldnt be called all the time .. only in initial creation then stored
+// @TODO strlen shouldnt be called all the time .. only in initial creation then stored (not realy needed for now)
 
 // @TODO is elementState needed?, what states transitions needed to interact with input
 
@@ -41,6 +41,12 @@ struct OmGui_Array {
 
 	Type& operator[](u32 index);
 	const Type& operator[](u32 index) const;
+
+	Type* begin();
+	Type* end();
+
+	const Type* begin() const;
+	const Type* end() const;
 };
 
 struct OmGui_Style : OmGuiStyle {
@@ -100,7 +106,7 @@ struct OmGuiContext {
 	bool hasOverlay; // dropdown ...
 	bool rotateActive; // only textfield now
 
-	i32 currentElement;  // the one user is currently pushing, not used in update/render function
+	u32 currentElement;  // the one user is currently pushing, not used in update/render function
 
 	u32 hotElementIndex;
 	u32 activeElementIndex;
@@ -180,15 +186,12 @@ struct OmGui_Element {
 	union {
 		u32 bufferDataOffset; // used by fields where buffer has to be allocated, since reallocation, it has to be offset
 		const char* text; // used only by buffers from user
-		//OmGui_TableColumn* tableColumns;
 	};
 };
 
-
-
-struct OmGui_TabButton { // @TODO FIX
+struct OmGui_TabButton {
 	i32 offsetX;
-	i32 w;
+	u32 textSize;
 	const char* text;
 };
 
@@ -300,6 +303,25 @@ inline const Type& OmGui_Array<Type>::operator[](u32 index) const {
 	return _data[index];
 }
 
+template<typename Type>
+inline Type* OmGui_Array<Type>::begin() {
+	return _data;
+}
+
+template<typename Type>
+inline const Type* OmGui_Array<Type>::begin() const {
+	return _data;
+}
+
+template<typename Type>
+inline Type* OmGui_Array<Type>::end() {
+	return _data + count_;
+}
+
+template<typename Type>
+inline const Type* OmGui_Array<Type>::end() const {
+	return _data + count_;
+}
 
 // ------------------------- UTIL ---------------------------------------------
 
@@ -367,6 +389,8 @@ i32 OmGui_TabReportRectH(OmGuiContext* context);
 
 i32 OmGui_SubTabReportH(OmGuiContext* context);
 
+i32 OmGui_TableReport(OmGuiContext* context, const OmGui_Tab* tab, const OmGui_Element* table, const OmGui_Element** inOutIterator);
+
 i32 OmGui_TabContentReportHeight(OmGuiContext* context, OmGui_Tab* tab);
 
 OmGui_BorderFlags OmGui_RectBorderCheck(OmGuiContext* context, OmGui_Rect* rect, i32 borderLimit);
@@ -389,7 +413,7 @@ OmGui_FieldEditState OmGui_FieldUpdate(OmGuiContext* context, OmGui_Element* ele
 
 void OmGui_TabDropDownRender(OmGuiContext* context, const OmGui_Tab* baseTab, /*const OmGui_Element* element*/ u32 tabsCount);
 
-void OmGui_TabButtonSet(OmGuiContext* context, OmGui_Tab* buttonTab, i32 offsetX);
+i32 OmGui_TabButtonWidth(OmGuiContext* context, OmGui_Tab* buttonTab);
 
 void OmGui_TabButtonRender(OmGuiContext* context, OmGui_Tab* baseTab, OmGui_Tab* buttonTab); // @TODO refactor and const?
 
@@ -544,8 +568,8 @@ OmGuiContext* OmGuiPlacementInit(void* buffer, OmGuiStyle* style, OmGuiIAllocato
 }
 
 void OmGuiDeinit(OmGuiContext* context) {
-	for (u32 i = 0; i < context->tabs.count_; ++i) {
-		OmGui_ArrayDeinit(context->tabs[i].elements, context->allocator);
+	for (auto& tab : context->tabs) {
+		OmGui_ArrayDeinit(tab.elements, context->allocator);
 	}
 
 	OmGui_ArrayDeinit(context->tabs, context->allocator);
@@ -570,10 +594,9 @@ u32 OmGuiAddTab(OmGuiContext* context, const char* name) {
 	tab.index = context->tabs.count_;
 	tab.nextIndex = INVALID_ARRAY_INDEX;
 	tab.rect = OmGui_RectCreate(100, 100, 640, 480);
-	//tab.button.index = TAB_BUTTON_INDEX;
 	tab.button.offsetX = 0;
 	tab.button.text = name;
-	tab.button.w = 0;
+	tab.button.textSize = (u32) strlen(name);
 	tab.side = OMGUI_NONE_FLAG;
 	tab.scrollbarOffset = 0;
 	tab.chainIndex = 0;
@@ -618,9 +641,8 @@ void OmGuiUpdateInput(OmGuiContext* context, const OmGuiInput* input) {
 }
 
 void OmGuiSetCurrentTab(OmGuiContext* context, unsigned int tabId) {
-	if (context->currentTab && (u32) context->currentElement < context->currentTab->elements.count_) {
+	if (context->currentTab && context->currentElement < context->currentTab->elements.count_)
 		context->currentTab->elements.count_ = context->currentElement;
-	}
 
 	Assert(tabId < context->tabIDToTabHandle.count_);
 	context->currentElement = 0;
@@ -654,7 +676,6 @@ bool OmGuiButton(OmGuiContext* context, const char* text) {
 
 	return false;
 }
-
 
 void OmGuiTextField(OmGuiContext* context, char* text, unsigned char maxSize, unsigned char viewSize) {
 	OmGui_Element* element = OmGui_AddElement(context, OMGUI_TEXT_FIELD, text, nullptr);
@@ -916,12 +937,14 @@ void OmGui_TabRenderHeader(OmGuiContext* context, OmGui_Tab* tab, bool highlight
 	u32 currentChainIndex = 0;
 	i32 maxWidth = 0;
 
+	i32 tabWidth = OmGui_TabButtonWidth(context, tab);
+
 	while (true) {
 		if (currentChainIndex == tab->chainIndex) {
 			OmGui_TabButtonRender(context, tab, tab);
-			OmGui_TabButtonSet(context, tab, offsetX);
-			offsetX += tab->button.w + context->style.tabElementsSpacing;
-			maxWidth = OmGui_Max(tab->button.w, maxWidth); // this can be from last render
+			tab->button.offsetX = offsetX;
+			offsetX += tabWidth + context->style.tabElementsSpacing;
+			maxWidth = OmGui_Max(tabWidth, maxWidth); // this can be from last render
 		}
 
 		if (nextIndex == INVALID_ARRAY_INDEX)
@@ -933,13 +956,14 @@ void OmGui_TabRenderHeader(OmGuiContext* context, OmGui_Tab* tab, bool highlight
 		if (offsetX < tab->rect.w) {
 			OmGui_TabButtonRender(context, tab, nextTab);
 		}
-		OmGui_TabButtonSet(context, nextTab, offsetX);
+		nextTab->button.offsetX = offsetX;
 
-		maxWidth = OmGui_Max(nextTab->button.w, maxWidth); // this can be from last render
-		offsetX += nextTab->button.w + context->style.tabElementsSpacing;
+		i32 width = OmGui_TabButtonWidth(context, nextTab);
+		maxWidth = OmGui_Max(width, maxWidth); // this can be from last render
+		offsetX += width + context->style.tabElementsSpacing;
 	}
 
-	if (tab->button.offsetX + tab->button.w / 2 >= tab->rect.w && tab->chainIndex > 0 && context->tabState != OMGUI_TAB_STATE_UNDOCKING) {
+	if (tab->button.offsetX + tabWidth / 2 >= tab->rect.w && tab->chainIndex > 0 && context->tabState != OMGUI_TAB_STATE_UNDOCKING) {
 		tab->chainIndex--;
 	}
 	//@Todo input here not nice (even though this is still header update)
@@ -1046,121 +1070,58 @@ static void OmGui_TabRender(OmGuiContext* context, OmGui_Tab* tab) {
 	}
 }
 
-
-static i32 OmGui_TableReport(OmGuiContext* context, OmGui_Tab* tab, OmGui_Element* table, u32 start, u32* outEnd) {
+static i32 OmGui_TableReport(OmGuiContext* context, const OmGui_Tab* tab, const OmGui_Element* table, const OmGui_Element** inOutIterator) {
 	i32 contentY = 0;
 	i32 maxY = 0;
 
-	u32 columnsCount = table->tableColumnsCount;
 	u32 currentColumn = 0;
-	u32 currentColumnWidth = 0;
 	OmGui_TableColumn* columns = (OmGui_TableColumn*) OmGui_ElementBufferData(context, table);
 
-	u32 end = 0;
-
-	for (u32 i = start; i < tab->elements.count_; i++) {
-		OmGui_Element* element = &tab->elements[i];
-
-		if (element->type == OMGUI_TABLE_END) {
-			end = i;
-			break;
-		}
-
-		switch (element->type) {
-		case OMGUI_I32_FIELD:
-		case OMGUI_F32_FIELD:
-		case OMGUI_TEXT_FIELD:
-		case OMGUI_LABEL:
-		case OMGUI_BUTTON:
-		case OMGUI_SLIDER:
-		case OMGUI_CHECKBOX:
-		{
-			columns[currentColumn].width = OmGui_Max(element->rect.w, columns[currentColumn].width);
-			maxY = OmGui_Max(element->rect.h, maxY);
-			break;
-		}
-		case OMGUI_CANVAS:
-		{
-			columns[currentColumn].width = OmGui_Max(element->rect.w, columns[currentColumn].width);
-			maxY = OmGui_Max(element->rect.h, maxY);
-			break;
-		}
-		case OMGUI_NEW_ROW:
-		{
+	const OmGui_Element* element = *inOutIterator;
+	const OmGui_Element* elementEnd = tab->elements.end();
+	for (; element < elementEnd && element->type != OMGUI_TABLE_END; element++) {
+		if (element->type == OMGUI_NEW_ROW) {
 			contentY += maxY + context->style.tabElementsSpacing;
 			maxY = 0;
-			break;
-		}
-		case OMGUI_TABLE:
-			break;
-		case OMGUI_SUBTAB:
-		default:
-			Assert(false);
-			break;
-		}
-		if (currentColumn == columnsCount - 1) {
 			currentColumn = 0;
-			contentY += maxY + context->style.tabElementsSpacing;
-			maxY = 0;
+		}
+		else if (element->type == OMGUI_TABLE || element->type == OMGUI_SUBTAB) {
+			Assert(false);
+			currentColumn++;
 		}
 		else {
-			currentColumn = element->type == OMGUI_NEW_ROW ? 0 : currentColumn + 1;
+			columns[currentColumn].width = OmGui_Max(element->rect.w, columns[currentColumn].width);
+			maxY = OmGui_Max(element->rect.h, maxY);
+			currentColumn++;
+		}
+
+		if (currentColumn == table->tableColumnsCount) {
+			contentY += maxY + context->style.tabElementsSpacing;
+			maxY = 0;
+			currentColumn = 0;
 		}
 	}
 
-	if (end == 0)
-		end = tab->elements.count_;
-
-	*outEnd = end;
-
+	*inOutIterator = element;
 	return contentY + maxY;
 }
 
 static i32 OmGui_TabContentReportHeight(OmGuiContext* context, OmGui_Tab* tab) {
 	i32 contentY = 0;
 	i32 maxY = 0;
-
 	bool closed = false;
-	if (tab->elements.count_ > 0) {
-		OmGui_Element* first = &tab->elements[0];
-		if (first->type == OMGUI_SUBTAB) {
-			contentY -= 2 * context->style.tabElementsIndent; // one for subtab one for start
-		}
+
+	if (tab->elements.count_ > 0 && tab->elements[0].type != OMGUI_SUBTAB) {
+		contentY += 2 * context->style.tabElementsIndent;
 	}
 
-	contentY += 2 * context->style.tabElementsIndent;
-
-	for (u32 i = 0; i < tab->elements.count_; i++) {
-		OmGui_Element* element = &tab->elements[i];
-
+	const OmGui_Element* element = tab->elements.begin();
+	const OmGui_Element* elementEnd = tab->elements.end();
+	for (; element < elementEnd; element++) {
 		if (closed && element->type != OMGUI_SUBTAB)
 			continue;
-
-		switch (element->type) {
-		case OMGUI_TABLE:
-			contentY += OmGui_TableReport(context, tab, element, i + 1, &i);
-			maxY = 0;
-			break;
-		case OMGUI_I32_FIELD:
-		case OMGUI_F32_FIELD:
-		case OMGUI_TEXT_FIELD:
-		case OMGUI_LABEL:
-		case OMGUI_BUTTON:
-		case OMGUI_SLIDER:
-		case OMGUI_CHECKBOX:
-		case OMGUI_CANVAS:
-		{
-			maxY = OmGui_Max(element->rect.h, maxY);
-			break;
-		}
-		case OMGUI_NEW_ROW:
-		{
-			contentY += maxY + context->style.tabElementsSpacing;
-			maxY = 0;
-			break;
-		}
-		case OMGUI_SUBTAB:
-		{
+		
+		if (element->type == OMGUI_SUBTAB) {
 			if (!closed)
 				contentY += context->style.tabElementsIndent;
 
@@ -1170,13 +1131,21 @@ static i32 OmGui_TabContentReportHeight(OmGuiContext* context, OmGui_Tab* tab) {
 
 			if (element->check_enabled)
 				contentY += context->style.tabElementsIndent;
-			break;
 		}
-		case OMGUI_TABLE_END:
-			break;
-		default:
+		else if (element->type == OMGUI_TABLE) {
+			const OmGui_Element* table = element++;
+			contentY += OmGui_TableReport(context, tab, table, &element);
+			maxY = 0;
+		}
+		else if (element->type == OMGUI_TABLE_END) {
 			Assert(false);
-			break;
+		}
+		else if (element->type == OMGUI_NEW_ROW) {
+			contentY += maxY + context->style.tabElementsSpacing;
+			maxY = 0;
+		}
+		else {
+			maxY = OmGui_Max(element->rect.h, maxY);
 		}
 	}
 
@@ -1270,21 +1239,19 @@ static void OmGui_TabContentRender(OmGuiContext* context, OmGui_Tab* tab, i32 ta
 	u32 currentColumnWidth = 0;
 	OmGui_TableColumn* tableColumns = nullptr;
 
-	for (u32 i = 0; i < tab->elements.count_; i++) {
-		OmGui_Element* element = &tab->elements[i];
-
-		if (closed && element->type != OMGUI_SUBTAB) {
-			element->rect.x = -9000;
-			element->rect.y = -9000;
+	for (auto& element : tab->elements) {
+		if (closed && element.type != OMGUI_SUBTAB) {
+			element.rect.x = -9000;
+			element.rect.y = -9000;
 			continue;
 		}
 
-		switch (element->type) {
+		switch (element.type) {
 		case OMGUI_TABLE:
 			if (!tableColumns) {
-				tableColumns = (OmGui_TableColumn*) OmGui_ElementBufferData(context, element);
+				tableColumns = (OmGui_TableColumn*) OmGui_ElementBufferData(context, &element);
 				currentColumn = 0;
-				columnsCount = element->tableColumnsCount;
+				columnsCount = element.tableColumnsCount;
 				currentColumnWidth = tableColumns[currentColumn].width;
 			}
 			break;
@@ -1305,47 +1272,47 @@ static void OmGui_TabContentRender(OmGuiContext* context, OmGui_Tab* tab, i32 ta
 		case OMGUI_F32_FIELD:
 		case OMGUI_TEXT_FIELD:
 		{
-			OmGui_TextFieldRender(context, tab, element);
-			element->rect = OmGui_RectCreate(x, y, OmGui_TabReportCenteredRectW(context, element->field.viewSize), basicHeight + context->style.labelIndent * 2);
-			x += OmGui_Max(element->rect.w, currentColumnWidth) + tabSpacing;
-			maxY = OmGui_Max(element->rect.h, maxY);
+			OmGui_TextFieldRender(context, tab, &element);
+			element.rect = OmGui_RectCreate(x, y, OmGui_TabReportCenteredRectW(context, element.field.viewSize), basicHeight + context->style.labelIndent * 2);
+			x += OmGui_Max(element.rect.w, currentColumnWidth) + tabSpacing;
+			maxY = OmGui_Max(element.rect.h, maxY);
 			break;
 		}
 		case OMGUI_LABEL:
 		{
-			OmGui_LabelRender(context, &element->rect, element->text);
-			element->rect = OmGui_RectCreate(x, y, OmGui_TabReportRectW(context, (i32) strlen(element->text)), basicHeight + context->style.labelIndent * 2);
-			x += OmGui_Max(element->rect.w, currentColumnWidth) + tabSpacing;
-			maxY = OmGui_Max(element->rect.h, maxY);
+			OmGui_LabelRender(context, &element.rect, element.text);
+			element.rect = OmGui_RectCreate(x, y, OmGui_TabReportRectW(context, (i32) strlen(element.text)), basicHeight + context->style.labelIndent * 2);
+			x += OmGui_Max(element.rect.w, currentColumnWidth) + tabSpacing;
+			maxY = OmGui_Max(element.rect.h, maxY);
 			break;
 		}
 		case OMGUI_BUTTON:
 		{
-			OmGui_ButtonRender(context, tab, element);
-			element->rect = OmGui_RectCreate(x, y, OmGui_TabReportCenteredRectW(context, (i32) strlen(element->text)), basicHeight + context->style.labelIndent * 2);
-			x += OmGui_Max(element->rect.w, currentColumnWidth) + tabSpacing;
-			maxY = OmGui_Max(element->rect.h, maxY);
+			OmGui_ButtonRender(context, tab, &element);
+			element.rect = OmGui_RectCreate(x, y, OmGui_TabReportCenteredRectW(context, (i32) strlen(element.text)), basicHeight + context->style.labelIndent * 2);
+			x += OmGui_Max(element.rect.w, currentColumnWidth) + tabSpacing;
+			maxY = OmGui_Max(element.rect.h, maxY);
 			break;
 		}
 		case OMGUI_CHECKBOX:
 		{
-			OmGui_CheckBoxRender(context, tab, element);
-			element->rect = OmGui_RectCreate(x, y + context->style.labelIndent, basicHeight, basicHeight);
-			x += OmGui_Max(element->rect.w, currentColumnWidth) + tabSpacing;
-			maxY = OmGui_Max(element->rect.h, maxY);
+			OmGui_CheckBoxRender(context, tab, &element);
+			element.rect = OmGui_RectCreate(x, y + context->style.labelIndent, basicHeight, basicHeight);
+			x += OmGui_Max(element.rect.w, currentColumnWidth) + tabSpacing;
+			maxY = OmGui_Max(element.rect.h, maxY);
 			break;
 		}
 		case OMGUI_CANVAS:
 		{
-			OmGui_UserCanvasCommand(context, element->rect.x, element->rect.y, element->rect.w, element->rect.h, element->canvas.id);
+			OmGui_UserCanvasCommand(context, element.rect.x, element.rect.y, element.rect.w, element.rect.h, element.canvas.id);
 
-			i32 w = element->canvas.stretchW ? tab->rect.x + futureTabContentWidth - x - tabIndent : element->rect.w;
+			i32 w = element.canvas.stretchW ? tab->rect.x + futureTabContentWidth - x - tabIndent : element.rect.w;
 			// Y is absolute fix with tab->rect.y .... Y containts offsetY fix...
-			i32 h = element->canvas.stretchH ? tab->rect.y + realTabHeight - y - offsetY - tabIndent : element->rect.h;
-			element->rect = OmGui_RectCreate(x, y, w < 0 ? 0 : w, h < 0 ? 0 : h);
+			i32 h = element.canvas.stretchH ? tab->rect.y + realTabHeight - y - offsetY - tabIndent : element.rect.h;
+			element.rect = OmGui_RectCreate(x, y, w < 0 ? 0 : w, h < 0 ? 0 : h);
 
-			x += OmGui_Max(element->rect.w, currentColumnWidth) + tabSpacing;
-			maxY = OmGui_Max(element->rect.h, maxY);
+			x += OmGui_Max(element.rect.w, currentColumnWidth) + tabSpacing;
+			maxY = OmGui_Max(element.rect.h, maxY);
 			break;
 		}
 		case OMGUI_NEW_ROW:
@@ -1357,16 +1324,16 @@ static void OmGui_TabContentRender(OmGuiContext* context, OmGui_Tab* tab, i32 ta
 		}
 		case OMGUI_SLIDER: 
 		{
-			if (element->rect.w > 0)
-				OmGui_SliderRender(context, tab, element);
-			element->rect = OmGui_RectCreate(x, y, futureTabContentWidth - x + tab->rect.x - tabIndent, OmGui_TabReportRectH(context));
-			x += OmGui_Max(element->rect.w, currentColumnWidth) + tabSpacing;
-			maxY = OmGui_Max(element->rect.h, maxY);
+			if (element.rect.w > 0)
+				OmGui_SliderRender(context, tab, &element);
+			element.rect = OmGui_RectCreate(x, y, futureTabContentWidth - x + tab->rect.x - tabIndent, OmGui_TabReportRectH(context));
+			x += OmGui_Max(element.rect.w, currentColumnWidth) + tabSpacing;
+			maxY = OmGui_Max(element.rect.h, maxY);
 			break;
 		}
 		case OMGUI_SUBTAB:
 		{
-			if (tableColumns) // invalid -> assert is in tab 
+			if (tableColumns) // invalid -> assert is in table report
 				break;
 
 			y += maxY;
@@ -1374,18 +1341,18 @@ static void OmGui_TabContentRender(OmGuiContext* context, OmGui_Tab* tab, i32 ta
 				y += tabIndent;
 
 			i32 rh = OmGui_SubTabReportH(context);
-			i32 yy = element->rect.y - context->style._signPrimarySize / 2;
+			i32 yy = element.rect.y - context->style._signPrimarySize / 2;
 
-			OmGui_RectCommand(context, element->rect.x - tabIndent, yy+1, realTabWidth, rh-1, context->style.tabBackgroundColor);
-			OmGui_CStringCommand(context, element->text, element->rect.x + context->style._signSecondarySize + context->style.tabElementsIndent + context->style.labelIndent, yy, context->style.textColor);
-			OmGui_ToggleButtonRender(context, tab, element);
+			OmGui_RectCommand(context, element.rect.x - tabIndent, yy+1, realTabWidth, rh-1, context->style.tabBackgroundColor);
+			OmGui_CStringCommand(context, element.text, element.rect.x + context->style._signSecondarySize + context->style.tabElementsIndent + context->style.labelIndent, yy, context->style.textColor);
+			OmGui_ToggleButtonRender(context, tab, &element);
 			x = tab->rect.x + tabIndent;
-			element->rect = OmGui_RectCreate(x, y + context->style._signPrimarySize / 2, context->style._signSecondarySize, rh);
+			element.rect = OmGui_RectCreate(x, y + context->style._signPrimarySize / 2, context->style._signSecondarySize, rh);
 
 			y += rh;
-			closed = !element->check_enabled;
+			closed = !element.check_enabled;
 
-			if (element->check_enabled)
+			if (element.check_enabled)
 				y += tabIndent;
 
 			maxY = 0;
@@ -1396,7 +1363,7 @@ static void OmGui_TabContentRender(OmGuiContext* context, OmGui_Tab* tab, i32 ta
 			break;
 		}
 
-		if (tableColumns && element->type != OMGUI_TABLE) {
+		if (tableColumns && element.type != OMGUI_TABLE) {
 			if (currentColumn == columnsCount - 1) {
 				currentColumn = 0;
 				y += maxY + tabSpacing;
@@ -1404,7 +1371,7 @@ static void OmGui_TabContentRender(OmGuiContext* context, OmGui_Tab* tab, i32 ta
 				maxY = 0;
 			}
 			else {
-				currentColumn = element->type == OMGUI_NEW_ROW ? 0 : currentColumn + 1;
+				currentColumn = element.type == OMGUI_NEW_ROW ? 0 : currentColumn + 1;
 			}
 
 			currentColumnWidth = tableColumns[currentColumn].width;
@@ -1521,13 +1488,12 @@ char* OmGuiUpdate(OmGuiContext* context, unsigned int* outBufferSize, OmGuiCurso
 
 			if (context->input.clickUp) {
 				// This is place where docking of a chain instead of single tab can be done, but so far no solution except n^2
-
 				i32 dockTabId = dockTab->id;
 				i32 tabId = tab->id;
 
 				OmGui_TabSetActive(context, dockTab->index); 
 
-				// pointers were changes
+				// pointers were changed
 				OmGui_Tab* activeTab = &context->tabs[context->tabIDToTabHandle[dockTabId]];
 				u32 tabIndex = context->tabs[context->tabIDToTabHandle[tabId]].index;
 
@@ -1557,7 +1523,8 @@ char* OmGuiUpdate(OmGuiContext* context, unsigned int* outBufferSize, OmGuiCurso
 		i32 activeIndex = activeTab->index;
 		u32 hiddenIndex = activeTab->nextIndex;
 
-		if (!OmGui_PointInRect(context->input.mouseX, context->input.mouseY, activeTab->rect.x + activeTab->button.offsetX, activeTab->rect.y + context->style.fontSize, activeTab->button.w, context->style.fontSize)) {
+		if (!OmGui_PointInRect(context->input.mouseX, context->input.mouseY, activeTab->rect.x + activeTab->button.offsetX, activeTab->rect.y + context->style.fontSize, 
+			OmGui_TabButtonWidth(context, activeTab), context->style.fontSize)) {
 			rect.x += context->input.mouseX - context->input.oldMouseX;
 			rect.y += context->input.mouseY - context->input.oldMouseY;
 
@@ -1737,7 +1704,7 @@ static void OmGui_RectResize(OmGuiContext* context, OmGui_Rect* rect, OmGui_Bord
 		rect->y += h - rect->h;
 }
 
-static void OmGui_TabDropDownUpdate(OmGuiContext* context, OmGui_Tab* tab,/* OmGui_Element* element, */u32 tabsCount) {
+static void OmGui_TabDropDownUpdate(OmGuiContext* context, OmGui_Tab* tab, u32 tabsCount) {
 	i32 index = -1;
 	if (context->tabState == OMGUI_TAB_STATE_NORMAL && (OmGui_TabIsActive(context, tab) || !context->activeTabHasCursor)) {
 		i32 h = OmGui_TabReportRectH(context);
@@ -1773,7 +1740,8 @@ static void OmGui_TabDropDownUpdate(OmGuiContext* context, OmGui_Tab* tab,/* OmG
 static void OmGui_TabButtonUpdate(OmGuiContext* context, OmGui_Tab* baseTab, OmGui_Tab* buttonTab) {
 	i32 h = OmGui_TabReportRectH(context);
 
-	if (OmGui_ElementAllowInput(context, baseTab) && OmGui_PointInRect(context->input.mouseX, context->input.mouseY, baseTab->rect.x + buttonTab->button.offsetX, baseTab->rect.y + h, buttonTab->button.w, h)) {
+	if (OmGui_ElementAllowInput(context, baseTab) && 
+		OmGui_PointInRect(context->input.mouseX, context->input.mouseY, baseTab->rect.x + buttonTab->button.offsetX, baseTab->rect.y + h, OmGui_TabButtonWidth(context, buttonTab), h)) {
 		OmGui_TabElementSetHot(context, buttonTab->index, TAB_BUTTON_INDEX);
 		OmGui_SetActive(context, baseTab->index, context->input.clickDown);
 
@@ -1916,9 +1884,8 @@ static void OmGui_TabDropDownRender(OmGuiContext* context, const OmGui_Tab* tab,
 	}
 }
 
-static void OmGui_TabButtonSet(OmGuiContext* context, OmGui_Tab* buttonTab, i32 offsetX) {
-	buttonTab->button.w = OmGui_TabReportCenteredRectW(context, (u32) strlen(buttonTab->button.text));
-	buttonTab->button.offsetX = offsetX;
+static i32 OmGui_TabButtonWidth(OmGuiContext* context, OmGui_Tab* buttonTab) {
+	return OmGui_TabReportCenteredRectW(context, buttonTab->button.textSize);
 }
 
 static void OmGui_TabButtonRender(OmGuiContext* context, OmGui_Tab* baseTab, OmGui_Tab* buttonTab) {
@@ -1927,8 +1894,8 @@ static void OmGui_TabButtonRender(OmGuiContext* context, OmGui_Tab* baseTab, OmG
 
 	if (!buttonTab->isHidden)
 		color = context->style.tabBackgroundColor;
-	
-	OmGui_RectCommand(context, baseTab->rect.x + buttonTab->button.offsetX, baseTab->rect.y + context->style.fontSize, buttonTab->button.w, OmGui_TabReportRectH(context), color);
+
+	OmGui_RectCommand(context, baseTab->rect.x + buttonTab->button.offsetX, baseTab->rect.y + context->style.fontSize, OmGui_TabButtonWidth(context, buttonTab), OmGui_TabReportRectH(context), color);
 	OmGui_CStringCommand(context, buttonTab->button.text, baseTab->rect.x + buttonTab->button.offsetX + context->style.labelIndent,
 		baseTab->rect.y + context->style.fontSize, context->style.textColor);
 }
@@ -2069,16 +2036,11 @@ static void OmGui_HiddenTabSetActive(OmGuiContext* context, u32 tabIndex, u32 hi
 	tab->rect = tmp.rect;
 	tab->chainIndex = chainIndex;
 
-	//tab->isHidden = false;
-	//hiddenTab->isHidden = true;
-
 	hiddenTab->isHidden = tab->isHidden;
 	tab->isHidden = tmp.isHidden;
 
-
 	OmGui_Swap(&tab->nextIndex, &hiddenTab->nextIndex);
 	OmGui_Swap(&tab->index, &hiddenTab->index);
-
 
 	context->tabIDToTabHandle[tab->id] = tabIndex;
 	context->tabIDToTabHandle[hiddenTab->id] = hiddenIndex;
@@ -2099,44 +2061,29 @@ static bool OmGui_ElementRectHot(OmGuiContext* context, const OmGui_Tab* tab, i3
 	return false;
 }
 
-// @TODO could be nicer
 static OmGui_Element* OmGui_AddElement(OmGuiContext* context, OmGui_ElementType type, const char* text, bool* optOutNew) {
-	OmGui_Element newElement;
-	newElement.type = type;
-	newElement.text = text;
-	newElement.hash = text ? OmGui_Hash(text) : 0;
-	
 	OmGui_Tab* tab = context->currentTab;
+	u32 hash = text ? OmGui_Hash(text) : 0;
 
-	bool same = true;
-	i32 count = tab->elements.count_;
+	if (context->currentElement >= tab->elements.count_) {
+		OmGui_Element newElement;
+		newElement.rect = OmGui_RectCreate(-900, -900, 0, 0);
+		newElement.index = tab->elements.count_;
+		newElement.type = OMGUI_INVALID;
+		OmGui_ArrayAdd(tab->elements, newElement, context->allocator);
+	}
+	// else { maybe reset rect ? }
+
+	OmGui_Element* element = &tab->elements[context->currentElement];
+	element->text = text;
+	element->type = type;
+	element->hash = hash;
 
 	if (optOutNew)
-		*optOutNew = true;
+		*optOutNew = element->type != type || element->hash != hash;
 
-	if (context->currentElement >= count) {
-		newElement.rect = {-900, -900, 0, 0};
-		newElement.index = count;
-		OmGui_ArrayAdd(tab->elements, newElement, context->allocator);
-		context->currentElement++;
-		return &tab->elements[count];
-	}
-	else {
-		OmGui_Element* element = &tab->elements[context->currentElement];
-		element->text = newElement.text; // If there is hash collision still update 
-
-		if (element->type != newElement.type || newElement.hash != element->hash) {
-			newElement.rect = element->rect; // Render will be new, but input will not work for this element for frame
-			newElement.index = tab->elements[context->currentElement].index;
-			tab->elements[context->currentElement] = newElement;
-		} 
-		else if (optOutNew) {
-			*optOutNew = false;
-		}
-
-		context->currentElement++;
-		return element;
-	}
+	context->currentElement++;
+	return element;
 }
 
 static void OmGui_TabSetActive(OmGuiContext* context, u32 tabIndex) {
@@ -2154,14 +2101,12 @@ static void OmGui_TabSetActive(OmGuiContext* context, u32 tabIndex) {
 		context->tabIDToTabHandle[tab->id] = i;
 		tab->index = i;
 
-		//if (tab->nextIndex != INVALID_ARRAY_INDEX) {
-			if (tab->nextIndex == tabIndex) { // was pointing to swapped
-				tab->nextIndex = context->tabs.count_ - 1;
-			}
-			else if (tab->nextIndex < INVALID_ARRAY_INDEX && tab->nextIndex > tabIndex) {
-				tab->nextIndex--; // was moved to the left
-			}
-		//}
+		if (tab->nextIndex == tabIndex) { // was pointing to swapped
+			tab->nextIndex = context->tabs.count_ - 1;
+		}
+		else if (tab->nextIndex < INVALID_ARRAY_INDEX && tab->nextIndex > tabIndex) {
+			tab->nextIndex--; // was moved to the left
+		}
 	}
 
 	VerifyChains(context);
