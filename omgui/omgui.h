@@ -1,6 +1,6 @@
 /*
 @author Ondrej Ritomsky
-@version 0.12, 06.01.2019
+@version 0.13, 09.01.2019
 
 No warranty implied
 */
@@ -141,21 +141,29 @@ void OmGuiColorToFloats(int color, float outRgb[3]);
 
 // -------------------------- RENDER COMMANDS -----------------------
 enum OmGuiCommandType : unsigned char {
-	OMGUI_COMMAND_NONE,        // no data
+	OMGUI_COMMAND_NONE = 0, // NEVER SENT
 	OMGUI_COMMAND_RECT,
 	OMGUI_COMMAND_TRIANGLE,
 	OMGUI_COMMAND_CSTRING,
 	OMGUI_COMMAND_SCISSOR_ON,
-	OMGUI_COMMAND_SCISSOR_OFF, // no data
+	OMGUI_COMMAND_SCISSOR_OFF,
 	OMGUI_COMMAND_USER_CANVAS,
 };
 
+// There is check in cpp if the alignment isnt higher
+// This is for the buffer with commands has properly aligned data and doesnt need another list of pointers to the buffer 
+// just buffer += sizeof(....ComandData) and alignment should be proper
+
+// The way of render commands might be changed in the future
+
+__declspec(align(8))
 struct OmGuiRectCommandData {
 	OmGuiCommandType type;
 	int x, y, w, h;
 	int color;
 };
 
+__declspec(align(8))
 struct OmGuiTriangleCommandData {
 	OmGuiCommandType type;
 	int x, y;
@@ -164,6 +172,7 @@ struct OmGuiTriangleCommandData {
 	int color;
 };
 
+__declspec(align(8))
 struct OmGuiCStringCommandData {
 	OmGuiCommandType type;
 	int x, y;
@@ -171,13 +180,19 @@ struct OmGuiCStringCommandData {
 	const char* text;
 };
 
-
+__declspec(align(8))
 struct OmGuiScissorOnCommandData {
 	OmGuiCommandType type;
 	int x, y, w, h;
 };
 
+__declspec(align(8))
+struct OmGuiScissorOffCommandData {
+	OmGuiCommandType type;
+};
 
+
+__declspec(align(8))
 struct OmGuiUserCanvasCommandData {
 	OmGuiCommandType type;
 	unsigned char id;

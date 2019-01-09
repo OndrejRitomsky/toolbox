@@ -17,6 +17,14 @@
 // @TODO is elementState needed?, what states transitions needed to interact with input
 
 
+
+static_assert(alignof(OmGuiRectCommandData)       == 8, "Alignment missmatch");
+static_assert(alignof(OmGuiTriangleCommandData)   == 8, "Alignment missmatch");
+static_assert(alignof(OmGuiCStringCommandData)    == 8, "Alignment missmatch");
+static_assert(alignof(OmGuiScissorOnCommandData)  == 8, "Alignment missmatch");
+static_assert(alignof(OmGuiScissorOffCommandData) == 8, "Alignment missmatch");
+static_assert(alignof(OmGuiUserCanvasCommandData) == 8, "Alignment missmatch");
+
 #define PARANOIA_LEVEL 0
 
 
@@ -28,8 +36,10 @@
 #endif
 
 
+
 typedef unsigned char u8;
 typedef unsigned int u32;
+typedef unsigned long long u64;
 typedef int i32;
 typedef float f32;
 
@@ -325,6 +335,8 @@ inline const Type* OmGui_Array<Type>::end() const {
 
 // ------------------------- UTIL ---------------------------------------------
 
+void* OmGui_Align(void* address, u64 alignment);
+
 u32 OmGui_Hash(const char* text);
 
 i32 OmGui_Max(i32 a, i32 b);
@@ -452,9 +464,9 @@ char* OmGui_ElementBufferData(OmGuiContext* context, const OmGui_Element* elemen
 }
 
 // non render data! must be called before any render data has been added
-u32 OmGui_PushBufferData(OmGuiContext* context, const char* data, u32 size);
+u32 OmGui_PushBufferData(OmGuiContext* context, const char* data, u32 size, u32 alignment);
 
-char* OmGui_ContextPushRenderData(OmGuiContext* context, const char* data, u32 size);
+void OmGui_ContextPushRenderData(OmGuiContext* context, const char* data, u32 size);
 
 // @TODO proper names
 void OmGui_RectCommand(OmGuiContext* context, i32 x, i32 y, i32 w, i32 h, i32 color);
@@ -621,7 +633,7 @@ u32 OmGuiAddTab(OmGuiContext* context, const char* name) {
 void OmGuiUpdateInput(OmGuiContext* context, const OmGuiInput* input) {
 	memcpy(&context->input, input, sizeof(OmGuiInput));
 
-	context->input.bufferInput = OmGui_PushBufferData(context, (const char*) context->input.inputData, context->input.inputCount * sizeof(OmGuiKeyType));
+	context->input.bufferInput = OmGui_PushBufferData(context, (const char*) context->input.inputData, context->input.inputCount * sizeof(OmGuiKeyType), alignof(OmGuiKeyType));
 	context->input.inputData = nullptr;	
 
 	context->activeTabHasCursor = false;
@@ -832,7 +844,7 @@ void OmGuiTable(OmGuiContext* context, unsigned int columnsCount) {
 
 	OmGui_Element* element = OmGui_AddElement(context, OMGUI_TABLE, nullptr, nullptr);
 
-	element->bufferDataOffset = OmGui_PushBufferData(context, nullptr, sizeof(OmGui_TableColumn) * columnsCount);
+	element->bufferDataOffset = OmGui_PushBufferData(context, nullptr, sizeof(OmGui_TableColumn) * columnsCount, alignof(OmGui_TableColumn));
 	OmGui_TableColumn* columns = (OmGui_TableColumn*) OmGui_ElementBufferData(context, element);
 	for (u32 i = 0; i < columnsCount; ++i)
 		columns[i].width = 0;
@@ -876,7 +888,7 @@ int OmGuiSlider(OmGuiContext* context, int minValue, int maxValue, int value) {
 	
 	char buffer[16];
 	snprintf(buffer, 16, "%d", clampedValue);
-	element->bufferDataOffset = OmGui_PushBufferData(context, buffer, 16);
+	element->bufferDataOffset = OmGui_PushBufferData(context, buffer, 16 * sizeof(char), alignof(char));
 
 	f32 ratio = (f32)(clampedValue - minValue) / (maxValue - minValue);
 	element->slider_value = (i32) roundf(element->rect.w * ratio);
@@ -1593,6 +1605,9 @@ char* OmGuiUpdate(OmGuiContext* context, unsigned int* outBufferSize, OmGuiCurso
 }
 
 
+static void* OmGui_Align(void* address, u64 alignment) {
+	return (void*) ((((u64) address) + alignment - 1) & (~(alignment - 1)));
+}
 
 static u32 OmGui_Hash(const char* text) {
 	i32 i = 0;
@@ -1843,7 +1858,7 @@ OmGui_FieldEditState OmGui_FieldUpdate(OmGuiContext* context, OmGui_Element* ele
 		i32 lastIndex = drawSize - 1 + element->field.viewOffset;
 		char last = buffer[lastIndex];
 		buffer[lastIndex] = '\0'; // if the string is longer than viewSize, null terminated string is needed
-		element->bufferDataOffset = OmGui_PushBufferData(context, buffer + element->field.viewOffset, drawSize);
+		element->bufferDataOffset = OmGui_PushBufferData(context, buffer + element->field.viewOffset, drawSize, alignof(char));
 		buffer[lastIndex] = last;
 	}
 
@@ -2192,30 +2207,36 @@ static void OmGui_BufferReserve(OmGuiIAllocator* allocator, char** inOutBuffer, 
 }
 
 
-static u32 OmGui_PushBufferData(OmGuiContext* context, const char* data, u32 size) {
+static u32 OmGui_PushBufferData(OmGuiContext* context, const char* data, u32 size, u32 alignment) {
 	Assert(context->renderDataSize == 0); // render data cannot be in use if this is !!!
 
-	OmGui_BufferReserve(context->allocator, &context->bufferData, context->bufferDataSize, &context->bufferDataCapacity, size);
-	Assert(context->bufferDataCapacity - context->bufferDataSize >= size);
+	OmGui_BufferReserve(context->allocator, &context->bufferData, context->bufferDataSize, &context->bufferDataCapacity, size + alignment);
+	Assert(context->bufferDataCapacity - context->bufferDataSize >= size + alignment);
 
 	u32 result = context->bufferDataSize;
+
+	char* dest = context->bufferData + context->bufferDataSize;
+	void* alignedDest = OmGui_Align(dest, alignment);
+	u32 adjustment = (u32) ((u64) alignedDest - (u64) dest);
+
 	if (data) {
-		memcpy(context->bufferData + context->bufferDataSize, data, size);
+		memcpy(alignedDest, data, size);
 	}
 
-	context->bufferDataSize += size;
+	context->bufferDataSize += size + adjustment;
+	result += adjustment;
+
+	Assert(((u64) context->bufferData + result) % alignment == 0);
 	return result;
 }
 
-static char* OmGui_ContextPushRenderData(OmGuiContext* context, const char* data, u32 size) {
+static void OmGui_ContextPushRenderData(OmGuiContext* context, const char* data, u32 size) {
 	OmGui_BufferReserve(context->allocator, &context->renderData, context->renderDataSize, &context->renderDataCapacity, size);
 	Assert(context->renderDataCapacity - context->renderDataSize >= size);
-
 	char* dest = context->renderData + context->renderDataSize;
+	Assert(((u64) dest) % 8 == 0);
 	memcpy(dest, data, size);
-
 	context->renderDataSize += size;
-	return dest;
 }
 
 static void OmGui_RectCommand(OmGuiContext* context, i32 x, i32 y, i32 w, i32 h, i32 color) {
@@ -2261,8 +2282,9 @@ static void OmGui_ScissorOnCommand(OmGuiContext* context, i32 x, i32 y, i32 w, i
 }
 
 static void OmGui_ScissorOffCommand(OmGuiContext* context) {
-	OmGuiCommandType type = OMGUI_COMMAND_SCISSOR_OFF;
-	OmGui_ContextPushRenderData(context, (const char*) &type, sizeof(type));
+	OmGuiScissorOffCommandData command;
+	command.type = OMGUI_COMMAND_SCISSOR_OFF;
+	OmGui_ContextPushRenderData(context, (const char*) &command, sizeof(command));
 }
 
 static void OmGui_UserCanvasCommand(OmGuiContext* context, i32 x, i32 y, i32 w, i32 h, u8 id) {
