@@ -1,6 +1,7 @@
 # JSON
 
 Single header ASCI encoding json parser for c++
+Escape characters in string are not (yet) supported
 
 ## Usage
 	#define JSON_IMPLEMENTATION 
@@ -78,8 +79,8 @@ if (JsonParse(input, nullptr, &value)) {
 	// or value->type_ == JSON_VALUE_OBJECT
 }
 
-// Parsing returns string type with nullptr 
-//   if the string was empty and JSON_INPUT_STRING_IS_STORAGE is not used
+// String can have NULL value and it should be checked for it
+// It happens if the string was empty and JSON_INPUT_STRING_IS_STORAGE is not used
 // if (JsonIsType(&value, JSON_VALUE_STRING)) { 
 //   if (JsonGetString(&value)) { ... }
 // }
@@ -89,7 +90,6 @@ if (JsonParse(input, nullptr, &value)) {
 // Printing
 JsonValue value;
 JsonSetString(&value, "abc", nullptr);
-JsonDeinit(&value);
 
 JsonPrintContext context = JsonPrintContextInit(nullptr);
 /// returned buffer is owned by printcontext
