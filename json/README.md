@@ -1,7 +1,9 @@
 # JSON
 
-Single header ASCI encoding json parser for c++
+Single header ASCI encoding json (4) parser for c++
+Spec. differences
 Escape characters in string are not (yet) supported
+Hexadecimal numbers 
 
 ## Usage
 	#define JSON_IMPLEMENTATION 

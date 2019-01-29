@@ -1,6 +1,6 @@
 /*
 	@author Ondrej Ritomsky
-	@version 0.41, 22.01.2019
+	@version 0.42, 29.01.2019
 
 	No warranty implied
 
@@ -257,6 +257,8 @@ static bool Json_LexerIsToken(Json_ParseContext* context, Json_TokenType type);
 static bool Json_LexerMatchToken(Json_ParseContext* context, Json_TokenType type);
 
 static bool Json_LexerExpectToken(Json_ParseContext* context, Json_TokenType type);
+
+static char* Json_LexerParseHexaNumber(Json_ParseContext* context);
 
 static char* Json_LexerParseNumber(Json_ParseContext* context);
 
@@ -613,8 +615,8 @@ static const char* Json_TokenName(Json_TokenType type) {
 	case JSON_TOKEN_COMMA: return ",";
 	case JSON_TOKEN_LEFT_BRACE: return "{";
 	case JSON_TOKEN_RIGHT_BRACE: return "}";
-	case JSON_TOKEN_LEFT_BRACKET: return "{";
-	case JSON_TOKEN_RIGHT_BRACKET: return "}";
+	case JSON_TOKEN_LEFT_BRACKET: return "[";
+	case JSON_TOKEN_RIGHT_BRACKET: return "]";
 	case JSON_TOKEN_INT: return "integer";
 	case JSON_TOKEN_DOUBLE: return "double";
 	case JSON_TOKEN_STR: return "string";
@@ -625,6 +627,35 @@ static const char* Json_TokenName(Json_TokenType type) {
 		break;
 	}
 	return nullptr;
+}
+
+
+static char* Json_LexerParseHexaNumber(Json_ParseContext* context) {
+	char* stream = context->stream;
+	char* start = stream;
+
+	++stream; // skip zero
+	++stream; // skip x
+
+	if (!isxdigit(*stream)) {
+		Json_LogError(context, "JSON: Hex digit expected after 0x\n");
+		return stream;
+	}
+	++stream;
+
+	while (isxdigit(*stream))
+		++stream;
+
+	long long int i = strtoll(start, nullptr, 16);
+	if (i == LLONG_MAX) {
+		Json_LogError(context, "JSON: Integer value too large\n");
+	}
+	else {
+		context->token.intVal = i;
+		context->token.type = JSON_TOKEN_INT;
+	}
+
+	return stream;
 }
 
 static char* Json_LexerParseNumber(Json_ParseContext* context) {
@@ -676,7 +707,7 @@ static char* Json_LexerParseNumber(Json_ParseContext* context) {
 		}
 	}
 	else {
-		long long int i = strtoull(start, nullptr, 10);
+		long long int i = strtoll(start, nullptr, 10);
 		if (i == LLONG_MAX) { // this kills the last value (if we dont check errno), can be done better
 			Json_LogError(context, "JSON: Integer value too large\n");
 		}
@@ -788,11 +819,19 @@ static void Json_LexerNextToken(Json_ParseContext* context) {
 			Json_LogError(context, "JSON: Digit expected after -\n");
 		}
 		else {
-			++stream;
 			stream = Json_LexerParseNumber(context);
 		}
 		break;
-	case '0': case '1': case '2': case '3': case '4':
+	case '0': 
+		++stream;
+		if (*stream == 'x') {
+			stream = Json_LexerParseHexaNumber(context);
+		}
+		else {
+			stream = Json_LexerParseNumber(context);
+		}
+		break;
+	case '1': case '2': case '3': case '4':
 	case '5': case '6': case '7': case '8': case '9':
 		stream = Json_LexerParseNumber(context);
 		break;
