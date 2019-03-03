@@ -1,6 +1,6 @@
 /*
 @author Ondrej Ritomsky
-@version 0.13, 09.01.2019
+@version 0.17, 03.03.2019
 
 No warranty implied
 */
@@ -9,6 +9,31 @@ No warranty implied
 
 
 struct OmGuiContext;
+struct OmGuiStyle;
+
+#ifdef OMGUI_PLUGINS_ENABLED
+
+struct OmGuiCustomRenderContext {
+	int x, y, w, h;
+	OmGuiContext* context;
+	void* element;
+	const OmGuiStyle* style;
+	double deltaTimeS;
+};
+
+struct OmGuiCustomUpdateContext {
+	bool active;
+	unsigned int inputCount;
+	const unsigned char* inputData;
+	double deltaTimeS;
+};
+
+typedef void(*OmGuiCustomRenderFn)(OmGuiCustomRenderContext* renderContext, int* outW, int* outH);
+
+#endif // OMGUI_PLUGINS_ENABLED
+
+
+
 
 typedef void*(*GuiAllocateFn)(void* allocatorContext, unsigned int size);
 typedef void(*GuiDeallocateFn)(void* allocatorContext, void* mem);
@@ -20,9 +45,22 @@ struct OmGuiIAllocator {
 
 
 enum OmGuiKeyType : unsigned char { // Just IsDown!
+	OMGUI_KEY_BACKSPACE = 8,
+	OMGUI_KEY_TAB = 9,
+	OMGUI_KEY_ENTER = 13,
+	OMGUI_KEY_SPACE = 32,
 	// 0 - 128 is currently done by WM_CHAR and maps 1 to 1
 	OMGUI_KEY_INVALID = 128,
+	OMGUI_KEY_LEFT,
+	OMGUI_KEY_RIGHT,
+	OMGUI_KEY_UP,
+	OMGUI_KEY_DOWN,
 	OMGUI_KEY_DELETE,
+	OMGUI_KEY_END,
+	OMGUI_KEY_HOME,
+	OMGUI_KEY_INSERT,
+	OMGUI_KEY_MOUSE_WHEEL_UP,
+	OMGUI_KEY_MOUSE_WHEEL_DOWN
 };
 
 
@@ -64,6 +102,11 @@ struct OmGuiStyle {
 
 	int labelIndent;
 	int fontSize;
+
+	// calculated
+	int _signPrimarySize;
+	int _signSecondarySize;
+	int _fontSizeW;
 };
 
 // Fill every frame for input
@@ -76,6 +119,7 @@ struct OmGuiInput {
 	int windowHeight;
 	unsigned int inputCount;
 	const OmGuiKeyType* inputData;
+	double deltaTimeS;
 };
 
 
@@ -92,15 +136,16 @@ void OmGuiDeinit(OmGuiContext* context);
 
 void OmGuiUpdateInput(OmGuiContext* context, const OmGuiInput* input);
 
-// returns permanent ID
-unsigned int OmGuiAddTab(OmGuiContext* context, const char* name);
-
-
-void OmGuiSetCurrentTab(OmGuiContext* context, unsigned int tabId);
+bool OmGuiTab(OmGuiContext* context, const char* name);
 
 bool OmGuiButton(OmGuiContext* context, const char* text);
 
-void OmGuiTextField(OmGuiContext* context, char* text, unsigned char maxSize, unsigned char viewSize);
+void OmGuiRect(OmGuiContext* context, int width, int height, unsigned int color);
+
+bool OmGuiListElement(OmGuiContext* context, const char* text, bool enabled);
+
+// returns when changed
+bool OmGuiTextField(OmGuiContext* context, char* text, unsigned char maxSize, unsigned char viewSize, bool immediate);
 
 int OmGuiIntField(OmGuiContext* context, int value, int minValue, int maxValue, unsigned char maxSize, unsigned char viewSize);
 
@@ -127,12 +172,23 @@ void OmGuiTable(OmGuiContext* context, unsigned int columnsCount);
 // Will automaticaly do new row
 void OmGuiTableEnd(OmGuiContext* context);
 
+#ifdef OMGUI_PLUGINS_ENABLED
+// the element is stored for rendering and given in parameter
+OmGuiCustomUpdateContext OmGuiAddCustomElement(OmGuiContext* context, OmGuiCustomRenderFn renderFn, void* element);
+#endif 
+
+
+
 // the buffer will be invalidate with any other omgui call
 char* OmGuiUpdate(OmGuiContext* context, unsigned int* outBufferSize, OmGuiCursorType* optOutCursor);
 
+// call after OmGuiUpdate
+bool OmGuiIsMouseCaptured(OmGuiContext* context);
+
+
 unsigned int OmGuiColor(unsigned char r, unsigned char g, unsigned char b, unsigned char a);
 
-void OmGuiColorToFloats(int color, float outRgb[3]);
+void OmGuiColorToFloats(unsigned int color, float outRgb[3]);
 
 
 
@@ -160,7 +216,7 @@ __declspec(align(8))
 struct OmGuiRectCommandData {
 	OmGuiCommandType type;
 	int x, y, w, h;
-	int color;
+	unsigned int color;
 };
 
 __declspec(align(8))
@@ -169,14 +225,15 @@ struct OmGuiTriangleCommandData {
 	int x, y;
 	int rotDeg;
 	int size;
-	int color;
+	unsigned int color;
 };
 
 __declspec(align(8))
 struct OmGuiCStringCommandData {
 	OmGuiCommandType type;
 	int x, y;
-	int color;
+  unsigned int textSize; // 0 is use strlen
+	unsigned int color;
 	const char* text;
 };
 
@@ -198,3 +255,22 @@ struct OmGuiUserCanvasCommandData {
 	unsigned char id;
 	int x, y, w, h;
 };
+
+
+
+
+#ifdef OMGUI_PLUGINS_ENABLED
+
+// IMPLEMENTATION 
+// Can be safely used only in plugin render function
+
+
+void OmGui_SetFocusLocked(OmGuiContext* context, bool locked);
+
+void OmGui_RectCommand(OmGuiContext* context, int x, int y, int w, int h, unsigned int color);
+
+void OmGui_TriangleCommand(OmGuiContext* context, int x, int y, int size, int rotDeg, unsigned int color);
+
+void OmGui_CStringCommand(OmGuiContext* context, const char* text, unsigned int size, int x, int y, unsigned int color);
+
+#endif

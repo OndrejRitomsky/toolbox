@@ -15,7 +15,6 @@ Custom style (font sizes not realy tested)
 Windows input (1 to 1) for now  
 User canvas  
 Cursor  
-Renderer NOT included  
-Tabs are not immediate and they are permanent for now.  
+Renderer NOT included
 Preview:  
 https://www.youtube.com/watch?v=3M2QbDEz_Mk

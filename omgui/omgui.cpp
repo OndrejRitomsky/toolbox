@@ -1,3 +1,5 @@
+#define OMGUI_PLUGINS_ENABLED
+
 #include "omgui.h"
 
 #include <string.h> // strlen ..
@@ -5,10 +7,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-// @TODO not refreshing tab should be marked!
-// @TODO not updating tab next round should be resolved.. dont render the if its shown? render it if its hidden ... then if shown dont? what about active or only one last tab
+// @TODO active tab doesnt have to be last, just have to make sure the index is properly fixed 
+// ^^ this could help a lot with code (still will have to be updated last ?? the ordering hmm, can be solved with the indirection?)
 
-// @TODO Table resizing on tab changing (reason: Columns width set to 0 -> first recalculate has bad value)
+// @TODO Table resizing on tab changing (reason: Columns width set to 0 -> bcs its new) (only single tab specific, multiple tab fixed)
 
 // @TODO tree 
 
@@ -59,12 +61,6 @@ struct OmGui_Array {
 	const Type* end() const;
 };
 
-struct OmGui_Style : OmGuiStyle {
-	i32 _signPrimarySize;
-	i32 _signSecondarySize;
-	i32 _fontSizeW;
-};
-
 enum OmGui_BorderFlags : u8 {
 	OMGUI_NONE_FLAG = 0,
 	OMGUI_UP_FLAG = 1,
@@ -104,6 +100,11 @@ struct OmGui_Rect {
 	i32 h;
 };
 
+struct OmGuiTabId {
+	u32 hash;
+	u32 index;
+};
+
 struct OmGui_Tab;
 
 struct OmGuiContext {
@@ -112,11 +113,10 @@ struct OmGuiContext {
 	OmGui_TabState tabState;
 	OmGui_TabState nextTabState;
 
+	bool isFocusLocked;
 	bool activeTabHasCursor;
 	bool hasOverlay; // dropdown ...
-	bool rotateActive; // only textfield now
-
-	u32 currentElement;  // the one user is currently pushing, not used in update/render function
+	u32 rotateFocusCount; // only textfield now
 
 	u32 hotElementIndex;
 	u32 activeElementIndex;
@@ -131,15 +131,14 @@ struct OmGuiContext {
 	u32 renderDataCapacity;
 	char* renderData;
 
-
 	OmGuiIAllocator* allocator;
 
-	OmGui_Style style; // wrap to public types
+	OmGuiStyle style; // wrap to public types
 	OmGui_Input input; // wrap to public types
 
 	OmGui_Tab* currentTab;  // the one user is currently pushing elements into, not used in update/render function
 
-	OmGui_Array<u32> tabIDToTabHandle; // permanent currently, cant be moved (@TODO lookuparray)
+	OmGui_Array<OmGuiTabId> tabIds; // permanent currently, cant be moved (@TODO lookuparray)
 	OmGui_Array<OmGui_Tab> tabs;
 
 	char editBuffer[64];
@@ -150,6 +149,7 @@ struct OmGuiContext {
 enum OmGui_ElementType : u8 {
 	OMGUI_INVALID,
 	OMGUI_LABEL,
+	OMGUI_COLORED_RECT,
 	OMGUI_BUTTON,
 	OMGUI_TEXT_FIELD,
 	OMGUI_U32_FIELD,
@@ -160,9 +160,11 @@ enum OmGui_ElementType : u8 {
 	OMGUI_DROPDOWN, // only for tab now
 	OMGUI_SLIDER,
 	OMGUI_CANVAS,
+	OMGUI_LIST_ELEMENT,
 	OMGUI_CHECKBOX,
 	OMGUI_TABLE,
-	OMGUI_TABLE_END
+	OMGUI_TABLE_END,
+	OMGUI_CUSTOM
 };
 
 struct OmGui_TableColumn {
@@ -171,6 +173,11 @@ struct OmGui_TableColumn {
 
 struct OmGui_Element {
 	OmGui_ElementType type;
+
+	u32 index;
+	u32 hash;
+	OmGui_Rect rect;
+
 	union {
 		struct { 
 			bool stretchW;
@@ -183,19 +190,20 @@ struct OmGui_Element {
 			u8 viewOffset;
 		} field;
 
-		bool check_enabled;  // checkbox, subtab
+		bool check_enabled;  // checkbox, subtab, list eleemnt
 		i32 dropdown_maxWidth;
 		i32 slider_value;
 		u32 tableColumnsCount;
+		u32 rect_color;
+
+		void* custom_Element; // @TODO 8 bytes...
 	};
 
-	u32 index;
-	u32 hash;
-	OmGui_Rect rect;
 
 	union {
 		u32 bufferDataOffset; // used by fields where buffer has to be allocated, since reallocation, it has to be offset
 		const char* text; // used only by buffers from user
+		OmGuiCustomRenderFn RenderFn;
 	};
 };
 
@@ -206,7 +214,8 @@ struct OmGui_TabButton {
 };
 
 struct OmGui_Tab {
-	bool isHidden;
+	bool isHidden; // this means tabbed
+	bool isUpdated;
 	OmGui_BorderFlags side;
 	u32 id;
 	u32 nextIndex;
@@ -214,6 +223,7 @@ struct OmGui_Tab {
 	u32 chainIndex;
 	i32 scrollbarOffset;
 	i32 dropDownMaxWidth;
+	u32 updatedElements;
 
 	OmGui_Rect rect;
 	OmGui_TabButton button;
@@ -235,9 +245,9 @@ static u32 DROPDOWN_BUTTON_INDEX = 0x7FffFFfd; // not in array, maybe move to ar
 static u32 TAB_BUTTON_INDEX = 0x7FffFFfe; // not in array, maybe move to array and set special TYPE ? (it will be tab header anyway)
 static u32 INVALID_ARRAY_INDEX = 0x7FffFFff;
 
-const static OmGuiKeyType KEY_TYPE_TAB = (OmGuiKeyType) 0x9;
-const static OmGuiKeyType KEY_TYPE_BACKSPACE = (OmGuiKeyType) 0x8;
-const static OmGuiKeyType KEY_TYPE_ENTER = (OmGuiKeyType) 0xD;
+//const static OmGuiKeyType KEY_TYPE_TAB = (OmGuiKeyType) 0x9;
+//const static OmGuiKeyType KEY_TYPE_BACKSPACE = (OmGuiKeyType) 0x8;
+//const static OmGuiKeyType KEY_TYPE_ENTER = (OmGuiKeyType) 0xD;
 
 // ------------------------- ARRAY --------------------------------------------
 
@@ -386,7 +396,7 @@ void OmGui_TabRenderHeader(OmGuiContext* context, OmGui_Tab* tab, bool highlight
 
 void OmGui_TabDock(OmGuiContext* context, OmGui_Tab* dockTab, u32 tabIndex, u32 chainIndex);
 
-void OmGui_HiddenTabUndock(OmGuiContext* context, OmGui_Rect rect, u32 hiddenIndex);
+void OmGui_HiddenTabUndock(OmGuiContext* context, u32 hiddenIndex);
 
 void OmGui_HiddenTabSetActive(OmGuiContext* context, u32 tabIndex, u32 hiddenIndex, u32 chainIndex);
 
@@ -433,6 +443,8 @@ void OmGui_TabButtonRender(OmGuiContext* context, OmGui_Tab* baseTab, OmGui_Tab*
 
 void OmGui_LabelRender(OmGuiContext* context, const OmGui_Rect* rect, const char* text);
 
+void OmGui_ListElementRender(OmGuiContext* context, const OmGui_Tab* tab, const OmGui_Element* element);
+
 void OmGui_ButtonRender(OmGuiContext* context, const OmGui_Tab* tab, const OmGui_Element* element);
 
 void OmGui_ToggleButtonRender(OmGuiContext* context, const OmGui_Tab* tab, const OmGui_Element* element);
@@ -454,7 +466,7 @@ void OmGui_SetActive(OmGuiContext* context, u32 tabIndex, bool setActive);
 
 OmGuiCursorType OmGui_CursorFromBorder(OmGui_BorderFlags border);
 
-
+bool OmGui_TryFocus(OmGuiContext* context);
 
 // ------------------------- RENDER -----------------------------------------
 
@@ -469,17 +481,11 @@ u32 OmGui_PushBufferData(OmGuiContext* context, const char* data, u32 size, u32 
 void OmGui_ContextPushRenderData(OmGuiContext* context, const char* data, u32 size);
 
 // @TODO proper names
-void OmGui_RectCommand(OmGuiContext* context, i32 x, i32 y, i32 w, i32 h, i32 color);
+void OmGui_UserCanvasCommand(OmGuiContext* context, i32 x, i32 y, i32 w, i32 h, u8 id);
 
-void OmGui_TriangleCommand(OmGuiContext* context, i32 x, i32 y, i32 size, i32 rotDeg, i32 color);
-
-void OmGui_CStringCommand(OmGuiContext* context, const char* text, i32 x, i32 y, i32 color);
-
-void OmGui_ScissorOnCommand(OmGuiContext* context, i32 x, i32 y, i32 w, i32 h);
+void OmGui_ScissorOnCommand(OmGuiContext* context, int x, int y, int w, int h);
 
 void OmGui_ScissorOffCommand(OmGuiContext* context);
-
-void OmGui_UserCanvasCommand(OmGuiContext* context, i32 x, i32 y, i32 w, i32 h, u8 id);
 
 
 #if PARANOIA_LEVEL > 0
@@ -543,7 +549,6 @@ OmGuiContext* OmGuiPlacementInit(void* buffer, OmGuiStyle* style, OmGuiIAllocato
 	OmGuiContext* context = (OmGuiContext*) buffer;
 	*context = {};
 
-	context->rotateActive = false;
 	context->currentTab = nullptr;
 	context->cursor = OMGUI_CURSOR_NORMAL;
 	context->input.windowWidth = 1024;
@@ -568,13 +573,15 @@ OmGuiContext* OmGuiPlacementInit(void* buffer, OmGuiStyle* style, OmGuiIAllocato
 	context->renderData = nullptr;
 	context->hasOverlay = false;
 	context->editBuffer[0] = '\0';
+	context->rotateFocusCount = 0;
+	context->isFocusLocked = false;
 
 	context->style._signPrimarySize = context->style.fontSize;
 	context->style._fontSizeW = context->style.fontSize * 9 / 16;
 	context->style._signSecondarySize = context->style._signPrimarySize * 9 / 16;
 
 	OmGui_ArrayInit(context->tabs);
-	OmGui_ArrayInit(context->tabIDToTabHandle);
+	OmGui_ArrayInit(context->tabIds);
 
 	return context;
 }
@@ -585,7 +592,7 @@ void OmGuiDeinit(OmGuiContext* context) {
 	}
 
 	OmGui_ArrayDeinit(context->tabs, context->allocator);
-	OmGui_ArrayDeinit(context->tabIDToTabHandle, context->allocator);
+	OmGui_ArrayDeinit(context->tabIds, context->allocator);
 
 	if (context->bufferData)
 		context->allocator->Deallocate(context->allocator, context->bufferData);
@@ -594,14 +601,15 @@ void OmGuiDeinit(OmGuiContext* context) {
 		context->allocator->Deallocate(context->allocator, context->renderData);
 }
 
-u32 OmGuiAddTab(OmGuiContext* context, const char* name) {
-	OmGui_Tab tab;
+OmGui_Tab* OmGui_AddTab(OmGuiContext* context, const char* name, u32 hash) {
+	OmGuiTabId id;
+	id.index = context->tabIds.count_;
+	id.hash = hash;
 
+	OmGui_Tab tab;
 	OmGui_ArrayInit(tab.elements);
 
-	tab.id = context->tabIDToTabHandle.count_;
-	u32 id = tab.id;
-
+	tab.id = id.index;
 	tab.isHidden = false;
 	tab.index = context->tabs.count_;
 	tab.nextIndex = INVALID_ARRAY_INDEX;
@@ -610,24 +618,25 @@ u32 OmGuiAddTab(OmGuiContext* context, const char* name) {
 	tab.button.text = name;
 	tab.button.textSize = (u32) strlen(name);
 	tab.side = OMGUI_NONE_FLAG;
-	tab.scrollbarOffset = 0;
+	tab.scrollbarOffset = -1;
 	tab.chainIndex = 0;
+	tab.isUpdated = true;
 
 	tab.dropDownMaxWidth = 0;
 
 	context->nextActiveTabIndex = tab.index;
 
 	OmGui_ArrayAdd(context->tabs, tab, context->allocator);
-	OmGui_ArrayAdd(context->tabIDToTabHandle, tab.index, context->allocator);
+	OmGui_ArrayAdd(context->tabIds, id, context->allocator);
 
 	if (tab.index > 0) {
-		tab.isHidden = true;
-		OmGui_TabDock(context, &context->tabs[0], tab.index, context->tabs.count_ - 1);
-		OmGui_TabSetActive(context, 0);
+		OmGui_TabDock(context, &context->tabs[context->tabs.count_ - 2], tab.index, 0);
+		OmGui_TabSetActive(context, context->tabs.count_ - 2);
+	
 		context->nextActiveTabIndex = context->tabs.count_ - 1;
 	}
 
-	return id;
+	return &context->tabs[context->tabs.count_ - 1];
 }
 
 void OmGuiUpdateInput(OmGuiContext* context, const OmGuiInput* input) {
@@ -649,19 +658,53 @@ void OmGuiUpdateInput(OmGuiContext* context, const OmGuiInput* input) {
 
 		if (activeHasInput && context->tabState != OMGUI_TAB_STATE_MOVING)
 			context->activeTabHasCursor = true;
+
+		context->rotateFocusCount = 0;
+		const unsigned char* inputData = (const unsigned char*) (context->bufferData + context->input.bufferInput);
+		if (!context->isFocusLocked) {
+			for (u32 i = 0; i < context->input.inputCount; ++i) {
+				if (inputData[i] == OMGUI_KEY_TAB) {
+					context->rotateFocusCount++;
+				}
+				else if (inputData[i] == OMGUI_KEY_MOUSE_WHEEL_UP) {
+					if (activeTab->scrollbarOffset >= 0) {
+						activeTab->scrollbarOffset -= context->style.fontSize;
+						if (activeTab->scrollbarOffset < 0) 
+							activeTab->scrollbarOffset = 0;
+					}
+				}
+				else if (inputData[i] == OMGUI_KEY_MOUSE_WHEEL_DOWN) {
+					if (activeTab->scrollbarOffset >= 0) {
+						activeTab->scrollbarOffset += context->style.fontSize;
+					}
+				}
+			}
+		}
 	}
 }
 
-void OmGuiSetCurrentTab(OmGuiContext* context, unsigned int tabId) {
-	if (context->currentTab && context->currentElement < context->currentTab->elements.count_)
-		context->currentTab->elements.count_ = context->currentElement;
+bool OmGuiTab(OmGuiContext* context, const char* name) {
+	u32 hash = OmGui_Hash(name);
+	OmGui_Tab* tab = nullptr;
 
-	Assert(tabId < context->tabIDToTabHandle.count_);
-	context->currentElement = 0;
+	for (auto& it : context->tabIds) {
+		if (it.hash == hash) {
+			tab = &context->tabs[it.index];
+			break;
+		}
+	}
 
-	u32 index = context->tabIDToTabHandle[tabId];
-	context->currentTab = &context->tabs[index];
+	if (!tab) {
+		tab = OmGui_AddTab(context, name, hash);
+	}
+
+	tab->updatedElements = 0;
+	tab->isUpdated = true;
+	context->currentTab = tab;
+
+	return true;
 }
+
 
 OmGui_Rect OmGui_RectCreate(i32 x, i32 y, i32 w, i32 h) {
 	return { x, y, w, h };
@@ -674,7 +717,7 @@ unsigned int OmGuiColor(unsigned char r, unsigned char g, unsigned char b, unsig
 	       (((u32) a & 0xFF));
 }
 
-void OmGuiColorToFloats(int color, float outRgb[3]) {
+void OmGuiColorToFloats(unsigned int color, float outRgb[3]) {
 	const f32 v = 1.0f / 256.0f;
 	outRgb[0] = v * (f32)((color >> 24) & 0xFF);
 	outRgb[1] = v * (f32)((color >> 16) & 0xFF);
@@ -689,36 +732,38 @@ bool OmGuiButton(OmGuiContext* context, const char* text) {
 	return false;
 }
 
-void OmGuiTextField(OmGuiContext* context, char* text, unsigned char maxSize, unsigned char viewSize) {
-	OmGui_Element* element = OmGui_AddElement(context, OMGUI_TEXT_FIELD, text, nullptr);
+void OmGuiRect(OmGuiContext* context, int width, int height, unsigned int color) {
+	OmGui_Element* element = OmGui_AddElement(context, OMGUI_COLORED_RECT, nullptr, nullptr);
+	element->rect.w = width;
+	element->rect.h = height;
+	element->rect_color = color;
+}
+
+bool OmGuiListElement(OmGuiContext* context, const char* text, bool enabled) {
+	bool isNew;
+	OmGui_Element* element = OmGui_AddElement(context, OMGUI_LIST_ELEMENT, text, &isNew);
+	element->check_enabled = enabled;
+
+	const OmGui_Tab* tab = context->currentTab;
+
+	if ((OmGui_ElementAllowInput(context, tab) && OmGui_PointInRect(context->input.mouseX, context->input.mouseY, element->rect.x, element->rect.y, element->rect.w, element->rect.h))) {
+		OmGui_TabElementSetHot(context, tab->index, element->index);
+
+		if (context->input.clickUp) {
+			element->check_enabled = !element->check_enabled;
+		}
+	}
+
+	return element->check_enabled;
+}
+
+bool OmGuiTextField(OmGuiContext* context, char* text, unsigned char maxSize, unsigned char viewSize, bool immediate) {
+	OmGui_Element* element = OmGui_AddElement(context, OMGUI_TEXT_FIELD, nullptr, nullptr);
 	element->field.viewSize = viewSize;
 	element->bufferDataOffset = 0;
 
-	const u8 BUFFER_SIZE = sizeof(context->editBuffer);
-	char* editBuffer;
-	u8 editBufferSize = maxSize < BUFFER_SIZE ? maxSize : BUFFER_SIZE;
-	u8 size;
-
-	if (!OmGui_TabElementIsActive(context, context->currentTab->index, element->index) || context->elementState != OMGUI_ELEMENT_STATE_EDITING) {
-		size = (u8) strlen(text);
-		editBuffer = text;
-	}
-	else {
-		editBuffer = context->editBuffer;
-		size = (u8) strlen(context->editBuffer);
-	}
-
-	OmGui_FieldEditState state = OmGui_FieldUpdate(context, element, editBuffer, size, editBufferSize);
-	if (state == OMGUI_FIELD_EDIT_FINISHED) {
-		memcpy(text, context->editBuffer, editBufferSize);
-		context->editBuffer[0] = '\0';
-	}
-	else if (state == OMGUI_FIELD_EDIT_START) {
-		memcpy(context->editBuffer, text, editBufferSize);
-	}
-	else if (state == OMGUI_FIELD_EDIT_CANCELED) {
-		context->editBuffer[0] = '\0';
-	}
+	OmGui_FieldEditState state = OmGui_FieldUpdate(context, element, text, (u8) strlen(text), maxSize);
+	return state == OMGUI_FIELD_EDIT_FINISHED || (state == OMGUI_FIELD_EDITING && immediate);
 }
 
 
@@ -811,7 +856,8 @@ int OmGuiIntField(OmGuiContext* context, int value, int minValue, int maxValue, 
 
 
 void OmGuiLabel(OmGuiContext* context, const char* text) {
-	OmGui_AddElement(context, OMGUI_LABEL, text, nullptr);
+	OmGui_Element* element = OmGui_AddElement(context, OMGUI_LABEL, nullptr, nullptr);
+	element->text = text;
 }
 
 void OmGuiRow(OmGuiContext* context) {
@@ -855,6 +901,29 @@ void OmGuiTable(OmGuiContext* context, unsigned int columnsCount) {
 void OmGuiTableEnd(OmGuiContext* context) {
 	OmGui_AddElement(context, OMGUI_TABLE_END, nullptr, nullptr);
 }
+
+OmGuiCustomUpdateContext OmGuiAddCustomElement(OmGuiContext* context, OmGuiCustomRenderFn RenderFn, void* customElement) {
+	OmGui_Element* element = OmGui_AddElement(context, OMGUI_CUSTOM, nullptr, nullptr);
+	element->RenderFn = RenderFn;
+	element->custom_Element = customElement;
+
+	if (OmGui_ElementRectHot(context, context->currentTab, element->index, context->input.clickUp, &element->rect)) {
+		OmGui_TabElementSetHot(context, context->currentTab->index, element->index);
+		OmGui_SetActive(context, context->currentTab->index, context->input.clickUp);
+		if (context->input.clickUp) {
+			context->activeElementIndex = element->index;
+			context->elementState = OMGUI_ELEMENT_STATE_EDITING;
+		}
+	}
+
+	OmGuiCustomUpdateContext updateContext;
+	updateContext.active = OmGui_TabElementIsActive(context, context->currentTab->index, element->index);
+	updateContext.inputData = (unsigned char*) (context->bufferData + context->input.bufferInput);
+	updateContext.inputCount = context->input.inputCount;
+	updateContext.deltaTimeS = context->input.deltaTimeS;
+	return updateContext;
+}
+
 
 int OmGuiSlider(OmGuiContext* context, int minValue, int maxValue, int value) {
 	OmGui_Element* element = OmGui_AddElement(context, OMGUI_SLIDER, nullptr, nullptr);
@@ -900,6 +969,10 @@ bool OmGuiSubTab(OmGuiContext* context, const char* text) {
 	OmGui_Element* element = OmGui_AddElement(context, OMGUI_SUBTAB, text, &isNew);
 	if (isNew)
 		element->check_enabled = true;
+
+	if (element->rect.w > 10) {
+		int a = 3;
+	}
 
 	element->rect.y -= element->rect.h / 2;
 	if (OmGui_ElementRectHot(context, context->currentTab, element->index, context->input.clickUp, &element->rect) && context->input.clickUp)
@@ -1156,6 +1229,13 @@ static i32 OmGui_TabContentReportHeight(OmGuiContext* context, OmGui_Tab* tab) {
 			contentY += maxY + context->style.tabElementsSpacing;
 			maxY = 0;
 		}
+		else if (element->type == OMGUI_LIST_ELEMENT) {	
+			if (maxY > 0) {
+				contentY += maxY + context->style.tabElementsSpacing;
+				maxY = 0;
+			}
+			contentY += element->rect.h;
+		}
 		else {
 			maxY = OmGui_Max(element->rect.h, maxY);
 		}
@@ -1178,6 +1258,7 @@ static bool OmGui_TabScrollbar(OmGuiContext* context, OmGui_Tab* tab, i32* outCo
 	i32 boxHeight = tab->rect.h - headerHeight;
 
 	if (contentY <= boxHeight) {
+		tab->scrollbarOffset = -1;
 		*outContentMinY = 0;
 		return false;
 	}
@@ -1196,7 +1277,7 @@ static bool OmGui_TabScrollbar(OmGuiContext* context, OmGui_Tab* tab, i32* outCo
 		if (context->input.clickDown) {
 			setActive = true;
 			y = relativeY - headerHeight - height / 2;
-			
+
 			context->nextTabState = OMGUI_TAB_STATE_SCROLLING;
 		}
 		else if (context->tabState == OMGUI_TAB_STATE_SCROLLING) {
@@ -1219,7 +1300,6 @@ static bool OmGui_TabScrollbar(OmGuiContext* context, OmGui_Tab* tab, i32* outCo
 	return true;
 
 }
-
 
 static void OmGui_TabContentRender(OmGuiContext* context, OmGui_Tab* tab, i32 tabContentWidth, i32 futureTabContentWidth, i32 offsetY) {
 	const i32 headerHeight = 2 * context->style.fontSize;
@@ -1251,6 +1331,10 @@ static void OmGui_TabContentRender(OmGuiContext* context, OmGui_Tab* tab, i32 ta
 	u32 currentColumnWidth = 0;
 	OmGui_TableColumn* tableColumns = nullptr;
 
+	OmGuiCustomRenderContext rc;
+	rc.context = context;
+	rc.style = &context->style;
+
 	for (auto& element : tab->elements) {
 		if (closed && element.type != OMGUI_SUBTAB) {
 			element.rect.x = -9000;
@@ -1259,6 +1343,21 @@ static void OmGui_TabContentRender(OmGuiContext* context, OmGui_Tab* tab, i32 ta
 		}
 
 		switch (element.type) {
+		case OMGUI_CUSTOM:
+		{
+			rc.element = element.custom_Element;
+			rc.x = element.rect.x;
+			rc.y = element.rect.y;
+			rc.w = element.rect.w;
+			rc.h = element.rect.h;
+			i32 w, h;
+			element.RenderFn(&rc, &w, &h);
+			if (w == 0) element.rect = OmGui_RectCreate(tab->rect.x, y, tab->rect.w, h);
+			else element.rect = OmGui_RectCreate(x, y, w, h);
+			x += OmGui_Max(element.rect.w, currentColumnWidth) + tabSpacing;
+			maxY = OmGui_Max(element.rect.h, maxY);
+			break;
+		}
 		case OMGUI_TABLE:
 			if (!tableColumns) {
 				tableColumns = (OmGui_TableColumn*) OmGui_ElementBufferData(context, &element);
@@ -1298,6 +1397,14 @@ static void OmGui_TabContentRender(OmGuiContext* context, OmGui_Tab* tab, i32 ta
 			maxY = OmGui_Max(element.rect.h, maxY);
 			break;
 		}
+		case OMGUI_COLORED_RECT:
+		{
+			OmGui_RectCommand(context, element.rect.x, element.rect.y, element.rect.w, element.rect.h, element.rect_color);
+			element.rect = OmGui_RectCreate(x, y, element.rect.w, element.rect.h);
+			x += OmGui_Max(element.rect.w, currentColumnWidth) + tabSpacing;
+			maxY = OmGui_Max(element.rect.h, maxY);
+			break;
+		}
 		case OMGUI_BUTTON:
 		{
 			OmGui_ButtonRender(context, tab, &element);
@@ -1325,6 +1432,26 @@ static void OmGui_TabContentRender(OmGuiContext* context, OmGui_Tab* tab, i32 ta
 
 			x += OmGui_Max(element.rect.w, currentColumnWidth) + tabSpacing;
 			maxY = OmGui_Max(element.rect.h, maxY);
+			break;
+		}
+		case OMGUI_LIST_ELEMENT:
+		{
+			if (!tableColumns) {
+				if (maxY > 0) {
+					y += maxY + tabSpacing;
+					maxY = 0;
+				}
+				x = tab->rect.x + tabIndent;
+				OmGui_ListElementRender(context, tab, &element);
+				element.rect = OmGui_RectCreate(tab->rect.x, y, tab->rect.w, basicHeight);
+				y += element.rect.h;
+			}
+			else {
+				OmGui_ListElementRender(context, tab, &element);
+				element.rect = OmGui_RectCreate(x, y, OmGui_Max(OmGui_TabReportCenteredRectW(context, (i32) strlen(element.text)), currentColumnWidth), basicHeight);
+				x += element.rect.w + tabSpacing;
+				maxY = OmGui_Max(element.rect.h, maxY);
+			}
 			break;
 		}
 		case OMGUI_NEW_ROW:
@@ -1356,7 +1483,7 @@ static void OmGui_TabContentRender(OmGuiContext* context, OmGui_Tab* tab, i32 ta
 			i32 yy = element.rect.y - context->style._signPrimarySize / 2;
 
 			OmGui_RectCommand(context, element.rect.x - tabIndent, yy+1, realTabWidth, rh-1, context->style.tabBackgroundColor);
-			OmGui_CStringCommand(context, element.text, element.rect.x + context->style._signSecondarySize + context->style.tabElementsIndent + context->style.labelIndent, yy, context->style.textColor);
+			OmGui_CStringCommand(context, element.text, 0, element.rect.x + context->style._signSecondarySize + context->style.tabElementsIndent + context->style.labelIndent, yy, context->style.textColor);
 			OmGui_ToggleButtonRender(context, tab, &element);
 			x = tab->rect.x + tabIndent;
 			element.rect = OmGui_RectCreate(x, y + context->style._signPrimarySize / 2, context->style._signSecondarySize, rh);
@@ -1378,7 +1505,7 @@ static void OmGui_TabContentRender(OmGuiContext* context, OmGui_Tab* tab, i32 ta
 		if (tableColumns && element.type != OMGUI_TABLE) {
 			if (currentColumn == columnsCount - 1) {
 				currentColumn = 0;
-				y += maxY + tabSpacing;
+				y += maxY + (maxY > 0 ? tabSpacing : 0);
 				x = tab->rect.x + tabIndent;
 				maxY = 0;
 			}
@@ -1391,6 +1518,10 @@ static void OmGui_TabContentRender(OmGuiContext* context, OmGui_Tab* tab, i32 ta
 	}
 }
 
+bool OmGuiIsMouseCaptured(OmGuiContext* context) {
+	return context->hotElementIndex != INVALID_ARRAY_INDEX || context->tabState != OMGUI_TAB_STATE_NORMAL;
+}
+
 char* OmGuiUpdate(OmGuiContext* context, unsigned int* outBufferSize, OmGuiCursorType* optOutCursor) {
 	if (context->tabs.count_ == 0) {
 		*outBufferSize = 0;
@@ -1400,10 +1531,6 @@ char* OmGuiUpdate(OmGuiContext* context, unsigned int* outBufferSize, OmGuiCurso
 		context->renderDataSize = 0;
 		context->bufferDataSize = 0;
 		return nullptr;
-	}
-
-	if (context->currentTab && (u32) context->currentElement < context->currentTab->elements.count_) {
-		context->currentTab->elements.count_ = context->currentElement;
 	}
 
 	context->hasOverlay = false;
@@ -1433,13 +1560,15 @@ char* OmGuiUpdate(OmGuiContext* context, unsigned int* outBufferSize, OmGuiCurso
 
 	// Main logic for each tab
 	for (u32 i = 0; i < context->tabs.count_; ++i) {
-		if (!context->tabs[i].isHidden)
+		if (!context->tabs[i].isHidden && context->tabs[i].isUpdated) {
+			context->tabs[i].elements.count_ = context->tabs[i].updatedElements;
 			OmGui_TabRender(context, &context->tabs[i]);
+		}
 	}
 
 	// Logic for the active tab
 	if (context->tabState == OMGUI_TAB_STATE_NORMAL) {
-		if (context->nextActiveTabIndex != INVALID_ARRAY_INDEX &&  !context->tabs[context->nextActiveTabIndex].isHidden) {
+		if (context->nextActiveTabIndex != INVALID_ARRAY_INDEX && !context->tabs[context->nextActiveTabIndex].isHidden) {
 			OmGui_TabSetActive(context, context->nextActiveTabIndex);
 		}
 		if (context->nextActiveTabIndex != context->hotTabIndex && context->nextTabState == OMGUI_TAB_STATE_UNDOCKING) {
@@ -1449,11 +1578,15 @@ char* OmGuiUpdate(OmGuiContext* context, unsigned int* outBufferSize, OmGuiCurso
 			OmGui_Tab* tab = &context->tabs[context->tabs.count_ - 1];
 
 			u32 chainIndex = 1;
-			u32 nextIndex = tab->nextIndex;
-			while (nextIndex != context->hotTabIndex) {
-				Assert(nextIndex != INVALID_ARRAY_INDEX);
-				chainIndex++;
-				nextIndex = context->tabs[nextIndex].nextIndex;
+
+			if (tab->index != context->hotTabIndex) {
+
+				u32 nextIndex = tab->nextIndex;
+				while (nextIndex != context->hotTabIndex) {
+					Assert(nextIndex != INVALID_ARRAY_INDEX);
+					chainIndex++;
+					nextIndex = context->tabs[nextIndex].nextIndex;
+				}
 			}
 
 			if (chainIndex <= tab->chainIndex)
@@ -1462,7 +1595,7 @@ char* OmGuiUpdate(OmGuiContext* context, unsigned int* outBufferSize, OmGuiCurso
 			u32 currentChainIndex = tab->chainIndex;
 			i32 index = tab->index;
 			OmGui_HiddenTabSetActive(context, tab->index, context->hotTabIndex, chainIndex);
-			OmGui_HiddenTabUndock(context, tab->rect, context->hotTabIndex);
+			OmGui_HiddenTabUndock(context, context->hotTabIndex);
 			context->tabs[context->tabs.count_ - 1].isHidden = false;
 
 			if (currentChainIndex > chainIndex)
@@ -1478,7 +1611,7 @@ char* OmGuiUpdate(OmGuiContext* context, unsigned int* outBufferSize, OmGuiCurso
 		i32 size = context->style.fontSize * 2;
 		u32 colors[2] = {context->style.buttonColor, context->style.buttonColor};
 		OmGui_Rect baseRects[2] = {OmGui_RectCreate(context->input.windowWidth / 2 - size / 2, 0, size, size),
-			                      OmGui_RectCreate(0, context->input.windowHeight / 2 - size / 2, size, size)};
+		                        OmGui_RectCreate(0, context->input.windowHeight / 2 - size / 2, size, size)};
 
 		OmGui_Rect setRects[2] = {OmGui_RectCreate(0, 0, context->input.windowWidth, context->input.windowHeight),
 			                      OmGui_RectCreate(0, 0, context->input.windowWidth / 2, context->input.windowHeight)};
@@ -1506,8 +1639,8 @@ char* OmGuiUpdate(OmGuiContext* context, unsigned int* outBufferSize, OmGuiCurso
 				OmGui_TabSetActive(context, dockTab->index); 
 
 				// pointers were changed
-				OmGui_Tab* activeTab = &context->tabs[context->tabIDToTabHandle[dockTabId]];
-				u32 tabIndex = context->tabs[context->tabIDToTabHandle[tabId]].index;
+				OmGui_Tab* activeTab = &context->tabs[context->tabIds[dockTabId].index];
+				u32 tabIndex = context->tabs[context->tabIds[tabId].index].index;
 
 				OmGui_TabDock(context, activeTab, tabIndex, 0);
 				OmGui_HiddenTabSetActive(context, activeTab->index, tabIndex, 0);
@@ -1541,7 +1674,7 @@ char* OmGuiUpdate(OmGuiContext* context, unsigned int* outBufferSize, OmGuiCurso
 			rect.y += context->input.mouseY - context->input.oldMouseY;
 
 			OmGui_HiddenTabSetActive(context, activeTab->index, hiddenIndex, 0);
-			OmGui_HiddenTabUndock(context, rect, hiddenIndex);
+			OmGui_HiddenTabUndock(context, hiddenIndex);
 			OmGui_TabSetActive(context, hiddenIndex);
 
 			context->nextTabState = OMGUI_TAB_STATE_MOVING;
@@ -1583,10 +1716,44 @@ char* OmGuiUpdate(OmGuiContext* context, unsigned int* outBufferSize, OmGuiCurso
 		}
 	}
 
+
+	// Hidden not updated should be removed
+	// Slow if many are to be deleted, could be made max 1
+	for (u32 it = context->tabs.count_; it > 0; --it) {
+		u32 i = it - 1;
+		if (!context->tabs[i].isUpdated) {
+			if (context->tabs[i].isHidden) {
+				OmGui_HiddenTabUndock(context, i);
+			}
+			else if (context->tabs[i].nextIndex != INVALID_ARRAY_INDEX) {
+				u32 undock = context->tabs[i].nextIndex;
+				OmGui_HiddenTabSetActive(context, i, context->tabs[i].nextIndex, 0); // swaps places
+				OmGui_HiddenTabUndock(context, undock);
+			}
+
+			u32 tabsIdIndex = context->tabs[i].id;
+
+			OmGui_ArrayDeinit(context->tabs[i].elements, context->allocator);
+
+			OmGui_ArrayRemoveOrdered(context->tabs, i);
+			for (u32 j = 0; j < context->tabs.count_; ++j) { // fix indices
+				context->tabIds[context->tabs[j].id].index = j;
+				context->tabs[j].index = j;
+			}
+
+			OmGui_ArrayRemoveOrdered(context->tabIds, tabsIdIndex);
+			for (u32 j = 0; j < context->tabIds.count_; ++j) { // fix indices
+				context->tabs[context->tabIds[j].index].id = j;
+			}
+		}
+	}
+
+	for (u32 i = 0; i < context->tabs.count_; ++i) {
+		context->tabs[i].isUpdated = false;
+	}
+
 	OmGui_TabElementSetHot(context, context->hotTabIndex, INVALID_ARRAY_INDEX);
 	context->nextActiveTabIndex = INVALID_ARRAY_INDEX;
-
-
 	context->tabState = context->nextTabState;
 
 	if (optOutCursor)
@@ -1610,12 +1777,11 @@ static void* OmGui_Align(void* address, u64 alignment) {
 }
 
 static u32 OmGui_Hash(const char* text) {
-	i32 i = 0;
-	u32 hash = 0x13371337; // @TODO
-	while (text[i]) {
-		u32 h = (u32) text[i];
-		hash = (hash * h) ^ hash;
-		++i;
+	u32 hash = 0x13371337u; // @TODO seed, prime
+	while (*text) {
+		hash ^= (u32) *text++;
+		hash *= 0x100001b3u; // @TODO ?
+		hash ^= hash >> 16;
 	}
 	return hash;
 }
@@ -1790,23 +1956,22 @@ OmGui_FieldEditState OmGui_FieldUpdate(OmGuiContext* context, OmGui_Element* ele
 		const char* inputData = context->bufferData + context->input.bufferInput;
 		for (u32 i = 0; i < context->input.inputCount; ++i) {
 			u8 c = inputData[i];
-			if (c == KEY_TYPE_BACKSPACE) {
+			if (c == OMGUI_KEY_BACKSPACE) {
 				if (size > 0) {
 					size--;
 					if (allowDot && buffer[size] == '.')
 						hasDot = false;
 				}
 			}
-			else if (c == KEY_TYPE_ENTER) {
+			else if (c == OMGUI_KEY_ENTER) {
 				state = OMGUI_FIELD_EDIT_FINISHED;
 				break;
 			}
-			else if (c == KEY_TYPE_TAB) {
-				context->rotateActive = true;
+			else if (c == OMGUI_KEY_TAB) {
 				state = OMGUI_FIELD_EDIT_FINISHED;
 				break;
 			}
-			else if (allowDot && c == '.' && !hasDot) {
+			else if (allowDot && c == '.' && !hasDot && size < maxSize - 1) {
 				buffer[size++] = c;
 			}
 			else if (allowMinus && c == '-' && size == 0) {
@@ -1822,9 +1987,8 @@ OmGui_FieldEditState OmGui_FieldUpdate(OmGuiContext* context, OmGui_Element* ele
 		buffer[size] = '\0';
 	}
 
-	if (context->rotateActive && OmGui_TabIsActive(context, context->currentTab) && context->activeElementIndex != element->index) {
+	if (OmGui_TabIsActive(context, context->currentTab) && context->activeElementIndex != element->index && OmGui_TryFocus(context)) {
 		context->activeElementIndex = element->index;
-		context->rotateActive = false;
 		context->elementState = OMGUI_ELEMENT_STATE_EDITING;
 		state = OMGUI_FIELD_EDIT_START;
 	}
@@ -1832,7 +1996,6 @@ OmGui_FieldEditState OmGui_FieldUpdate(OmGuiContext* context, OmGui_Element* ele
 	if (state == OMGUI_FIELD_EDITING) {
 		if (context->input.clickUp) { // @TODO clickdown
 			state = OMGUI_FIELD_EDIT_CANCELED;
-			context->rotateActive = false;
 		}
 		else { // has to be reset
 			context->activeElementIndex = element->index;
@@ -1892,7 +2055,7 @@ static void OmGui_TabDropDownRender(OmGuiContext* context, const OmGui_Tab* tab,
 			if (DROPDOWN_BUTTON_INDEX == context->hotElementIndex && nextTab->index == context->hotTabIndex)
 				OmGui_RectCommand(context, x, offsetY, tab->dropDownMaxWidth, rowHeight, context->style.buttonHotColor);
 
-			OmGui_CStringCommand(context, nextTab->button.text, x+ context->style.labelIndent, offsetY, context->style.textColor);
+			OmGui_CStringCommand(context, nextTab->button.text, 0, x+ context->style.labelIndent, offsetY, context->style.textColor);
 			index = nextTab->nextIndex;
 			offsetY += rowHeight;
 		}
@@ -1911,12 +2074,24 @@ static void OmGui_TabButtonRender(OmGuiContext* context, OmGui_Tab* baseTab, OmG
 		color = context->style.tabBackgroundColor;
 
 	OmGui_RectCommand(context, baseTab->rect.x + buttonTab->button.offsetX, baseTab->rect.y + context->style.fontSize, OmGui_TabButtonWidth(context, buttonTab), OmGui_TabReportRectH(context), color);
-	OmGui_CStringCommand(context, buttonTab->button.text, baseTab->rect.x + buttonTab->button.offsetX + context->style.labelIndent,
+	OmGui_CStringCommand(context, buttonTab->button.text, 0, baseTab->rect.x + buttonTab->button.offsetX + context->style.labelIndent,
 		baseTab->rect.y + context->style.fontSize, context->style.textColor);
 }
 
 static void OmGui_LabelRender(OmGuiContext* context, const OmGui_Rect* rect, const char* text) {
-	OmGui_CStringCommand(context, text, rect->x, rect->y + context->style.labelIndent, context->style.textColor);
+	OmGui_CStringCommand(context, text, 0, rect->x, rect->y + context->style.labelIndent, context->style.textColor);
+}
+
+static void OmGui_ListElementRender(OmGuiContext* context, const OmGui_Tab* tab, const OmGui_Element* element) {
+	bool hover = OmGui_TabElementIsHot(context, tab->index, element->index);
+	i32 color = hover ? context->style.buttonHotColor : context->style.buttonColor;
+
+	if (element->check_enabled) {
+		color = context->style.borderResizingColor;
+	}
+
+	OmGui_RectCommand(context, element->rect.x, element->rect.y, element->rect.w, element->rect.h, color);
+	OmGui_CStringCommand(context, element->text, 0, element->rect.x + context->style.labelIndent, element->rect.y, context->style.textColor);
 }
 
 static void OmGui_ButtonRender(OmGuiContext* context, const OmGui_Tab* tab, const OmGui_Element* element) {
@@ -1924,7 +2099,7 @@ static void OmGui_ButtonRender(OmGuiContext* context, const OmGui_Tab* tab, cons
 	i32 color = hover ? context->style.buttonHotColor : context->style.buttonColor;
 
 	OmGui_RectCommand(context, element->rect.x, element->rect.y, element->rect.w, element->rect.h, color);
-	OmGui_CStringCommand(context, element->text, element->rect.x + context->style.labelIndent, element->rect.y + context->style.labelIndent, context->style.textColor);
+	OmGui_CStringCommand(context, element->text, 0, element->rect.x + context->style.labelIndent, element->rect.y + context->style.labelIndent, context->style.textColor);
 }
 
 static void OmGui_ToggleButtonRender(OmGuiContext* context, const OmGui_Tab* tab, const OmGui_Element* element) {
@@ -1955,7 +2130,7 @@ static void OmGui_TextFieldRender(OmGuiContext* context, const OmGui_Tab* tab, c
 	i32 bw2 = 2 * context->style.elementBorderWidth;
 	OmGui_RectCommand(context, element->rect.x, element->rect.y, element->rect.w, element->rect.h, context->style.borderColor);
 	OmGui_RectCommand(context, element->rect.x + bw, element->rect.y + bw, element->rect.w - bw2, element->rect.h - bw2, color);
-	OmGui_CStringCommand(context, text, element->rect.x + context->style.labelIndent, element->rect.y + context->style.labelIndent, context->style.textColor);
+	OmGui_CStringCommand(context, text, 0, element->rect.x + context->style.labelIndent, element->rect.y + context->style.labelIndent, context->style.textColor);
 
 	if (context->activeElementIndex == element->index && context->elementState == OMGUI_ELEMENT_STATE_EDITING) {
 		i32 w = OmGui_TabReportCenteredRectW(context, (u32) strlen(text));
@@ -2000,7 +2175,7 @@ void OmGui_SliderRender(OmGuiContext* context, const OmGui_Tab* tab, const OmGui
 		x += element->slider_value > element->rect.w / 2 ? -(rectWidth + context->style.fontSize) : rectWidth ;
 
 		OmGui_RectCommand(context, x, y, rectWidth, rectHeight, color);
-		OmGui_CStringCommand(context, text, x + context->style.labelIndent, y, context->style.textColor);
+		OmGui_CStringCommand(context, text, 0, x + context->style.labelIndent, y, context->style.textColor);
 	}
 }
 
@@ -2057,12 +2232,15 @@ static void OmGui_HiddenTabSetActive(OmGuiContext* context, u32 tabIndex, u32 hi
 	OmGui_Swap(&tab->nextIndex, &hiddenTab->nextIndex);
 	OmGui_Swap(&tab->index, &hiddenTab->index);
 
-	context->tabIDToTabHandle[tab->id] = tabIndex;
-	context->tabIDToTabHandle[hiddenTab->id] = hiddenIndex;
+	context->tabIds[tab->id].index = tabIndex;
+	context->tabIds[hiddenTab->id].index = hiddenIndex;
 
 	{ // @HACK when hidden tab is moved and then showed, last position is rendered, reset positions
-		for (u32 i = 0; i < tab->elements.count_; ++i) 
-			tab->elements[i].rect = OmGui_RectCreate(0,0,0,0);
+		for (u32 i = 0; i < tab->elements.count_; ++i) {
+			tab->elements[i].rect.x = -9000;
+			tab->elements[i].rect.y = -9000;
+			// the width is not reseted, it will be needed if no changes happend
+		}
 	}
 }
 
@@ -2080,24 +2258,37 @@ static OmGui_Element* OmGui_AddElement(OmGuiContext* context, OmGui_ElementType 
 	OmGui_Tab* tab = context->currentTab;
 	u32 hash = text ? OmGui_Hash(text) : 0;
 
-	if (context->currentElement >= tab->elements.count_) {
+	if (context->currentTab->updatedElements >= tab->elements.count_) {
 		OmGui_Element newElement;
 		newElement.rect = OmGui_RectCreate(-900, -900, 0, 0);
 		newElement.index = tab->elements.count_;
 		newElement.type = OMGUI_INVALID;
 		OmGui_ArrayAdd(tab->elements, newElement, context->allocator);
 	}
-	// else { maybe reset rect ? }
 
-	OmGui_Element* element = &tab->elements[context->currentElement];
+	OmGui_Element* element = &tab->elements[context->currentTab->updatedElements];
+	
+
+
+	bool isNew = element->type != type || element->hash != hash;
+
+	if (isNew) {
+		int a = 3;
+	}
+
 	element->text = text;
 	element->type = type;
-	element->hash = hash;
+	element->hash = hash;	
 
 	if (optOutNew)
-		*optOutNew = element->type != type || element->hash != hash;
+		*optOutNew = isNew;
 
-	context->currentElement++;
+	if (isNew) 
+		tab->elements[context->currentTab->updatedElements].rect = {0,0,0,0};
+
+
+	context->currentTab->updatedElements++;
+
 	return element;
 }
 
@@ -2113,7 +2304,7 @@ static void OmGui_TabSetActive(OmGuiContext* context, u32 tabIndex) {
 
 	for (u32 i = 0; i < context->tabs.count_; ++i) {
 		OmGui_Tab* tab = &context->tabs[i];
-		context->tabIDToTabHandle[tab->id] = i;
+		context->tabIds[tab->id].index = i;
 		tab->index = i;
 
 		if (tab->nextIndex == tabIndex) { // was pointing to swapped
@@ -2165,10 +2356,11 @@ static void OmGui_TabDock(OmGuiContext* context, OmGui_Tab* dockTab, u32 tabInde
 	VerifyChains(context);
 }
 
-static void OmGui_HiddenTabUndock(OmGuiContext* context, OmGui_Rect rect, u32 hiddenIndex) {
+static void OmGui_HiddenTabUndock(OmGuiContext* context, u32 hiddenIndex) {
 	Assert(hiddenIndex != INVALID_ARRAY_INDEX);
 
 	OmGui_Tab* hiddenTab = &context->tabs[hiddenIndex];
+
 	for (u32 i = 0; i < context->tabs.count_; ++i) {
 		if (context->tabs[i].nextIndex == hiddenIndex) {
 			context->tabs[i].nextIndex = hiddenTab->nextIndex;
@@ -2239,7 +2431,23 @@ static void OmGui_ContextPushRenderData(OmGuiContext* context, const char* data,
 	context->renderDataSize += size;
 }
 
-static void OmGui_RectCommand(OmGuiContext* context, i32 x, i32 y, i32 w, i32 h, i32 color) {
+bool OmGui_TryFocus(OmGuiContext* context) {
+	if (context->rotateFocusCount > 0) {
+		context->rotateFocusCount--;
+		return true;
+	}
+
+	return false;
+}
+
+void OmGui_SetFocusLocked(OmGuiContext* context, bool locked) {
+	context->isFocusLocked = locked;
+}
+
+void OmGui_RectCommand(OmGuiContext* context, int x, int y, int w, int h, unsigned int color) {
+	if (x + w < 0 || y + h < 0)
+		return;
+
 	OmGuiRectCommandData command;
 	command.type = OMGUI_COMMAND_RECT;
 	command.x = x;
@@ -2250,7 +2458,10 @@ static void OmGui_RectCommand(OmGuiContext* context, i32 x, i32 y, i32 w, i32 h,
 	OmGui_ContextPushRenderData(context, (const char*) &command, sizeof(command));
 }
 
-static void OmGui_TriangleCommand(OmGuiContext* context, i32 x, i32 y, i32 size, i32 rotDeg, i32 color) {
+void OmGui_TriangleCommand(OmGuiContext* context, int x, int y, int size, int rotDeg, unsigned int color) {
+	if (x + size < 0 || y + size < 0)
+		return;
+
 	OmGuiTriangleCommandData command;
 	command.type = OMGUI_COMMAND_TRIANGLE;
 	command.x = x;
@@ -2261,17 +2472,24 @@ static void OmGui_TriangleCommand(OmGuiContext* context, i32 x, i32 y, i32 size,
 	OmGui_ContextPushRenderData(context, (const char*) &command, sizeof(command));
 }
 
-static void OmGui_CStringCommand(OmGuiContext* context, const char* text, i32 x, i32 y, i32 color) {
+void OmGui_CStringCommand(OmGuiContext* context, const char* text, unsigned int textSize, int x, int y, unsigned int color) {
+	if (x + 1000 < 0 || y + 100 < 0) // @TODO
+		return;
+
 	OmGuiCStringCommandData command;
 	command.type = OMGUI_COMMAND_CSTRING;
 	command.x = x;
 	command.y = y;
 	command.text = text;
 	command.color = color;
+  command.textSize = textSize;
 	OmGui_ContextPushRenderData(context, (const char*) &command, sizeof(command));
 }
 
-static void OmGui_ScissorOnCommand(OmGuiContext* context, i32 x, i32 y, i32 w, i32 h) {
+static void OmGui_ScissorOnCommand(OmGuiContext* context, int x, int y, int w, int h) {
+	if (x + w < 0 || y + h < 0)
+		return;
+
 	OmGuiScissorOnCommandData command;
 	command.type = OMGUI_COMMAND_SCISSOR_ON;
 	command.x = x;
@@ -2288,6 +2506,9 @@ static void OmGui_ScissorOffCommand(OmGuiContext* context) {
 }
 
 static void OmGui_UserCanvasCommand(OmGuiContext* context, i32 x, i32 y, i32 w, i32 h, u8 id) {
+	if (x + w < 0 || y + h < 0)
+		return;
+
 	OmGuiUserCanvasCommandData command;
 	command.type = OMGUI_COMMAND_USER_CANVAS;
 	command.id = id;
